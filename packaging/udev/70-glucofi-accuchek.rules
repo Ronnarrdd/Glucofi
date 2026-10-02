@@ -1,0 +1,4 @@
+# Glucofi : accès USB aux lecteurs Accu-Chek pour l'utilisateur de la session
+# locale active (ACL posée par systemd-logind via uaccess), sans root.
+# Mêmes modèles que `accuchek --known-devices` (vérifié par les tests).
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="173a", ATTR{idProduct}=="21d5|21d7|21d8", TAG+="uaccess"

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ronnarrdd/Glucofi/contracts/accuchek_output.schema.json",
+  "title": "Sortie JSON de /usr/local/bin/accuchek (format 2)",
+  "description": "Mesures lues sur un Accu-Chek Guide, avec l'identité du lecteur, son horloge et les compteurs annoncés/reçus. 'timestamp' est l'heure affichée par le lecteur ; 'epoch' est cette heure interprétée dans le fuseau du PC, heure d'été comprise (mktime avec tm_isdst=-1). Écrit seulement si le code de sortie vaut 0 (contracts.AccuchekExit) ; sinon stdout est vide et stderr contient 'accuchek: <raison>'. Les anciennes versions écrivaient seulement le tableau 'readings' : Glucofi l'accepte encore pour les imports de fichiers.",
+  "type": "object",
+  "required": ["format", "meter", "clock", "glucose", "meal", "readings"],
+  "additionalProperties": false,
+  "$defs": {
+    "time": {"type": "string", "pattern": "^\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}$"},
+    "count": {
+      "type": "object",
+      "required": ["announced", "received"],
+      "properties": {
+        "announced": {"type": ["integer", "null"], "minimum": 0, "description": "nombre d'entrées annoncé par le lecteur, null s'il ne décrit pas ses segments"},
+        "received": {"type": "integer", "minimum": 0},
+        "unmatched": {"type": "integer", "minimum": 0, "description": "marqueurs sans mesure à la même seconde"}
+      }
+    }
+  },
+  "properties": {
+    "format": {"const": 2},
+    "meter": {
+      "type": ["object", "null"],
+      "description": "identité annoncée par le lecteur (attributs MDS), null s'il n'en annonce aucune",
+      "required": ["manufacturer", "model", "serial", "firmware", "hardware", "software", "system_id"],
+      "properties": {
+        "manufacturer": {"type": "string"},
+        "model": {"type": "string", "description": "numéro de modèle Roche, 925 pour un Guide"},
+        "serial": {"type": "string"},
+        "firmware": {"type": "string"},
+        "hardware": {"type": "string"},
+        "software": {"type": "string"},
+        "system_id": {"type": "string", "pattern": "^[0-9A-F]*$"}
+      }
+    },
+    "clock": {
+      "type": ["object", "null"],
+      "description": "horloge du lecteur lue en début de session, avant une éventuelle remise à l'heure",
+      "required": ["meter", "pc", "offset_s", "settable", "pc_synchronized", "action"],
+      "properties": {
+        "meter": {"$ref": "#/$defs/time"},
+        "pc": {"oneOf": [{"$ref": "#/$defs/time"}, {"type": "null"}], "description": "null en rejeu sans --now"},
+        "offset_s": {"type": ["integer", "null"], "description": "lecteur - PC en secondes"},
+        "settable": {"type": "boolean"},
+        "pc_synchronized": {"type": ["boolean", "null"], "description": "horloge du PC synchronisée (NTP) ; jamais copiée sur le lecteur sinon"},
+        "action": {"enum": ["not_requested", "set", "within_tolerance", "not_settable", "pc_not_synchronized", "pc_unknown", "unknown", "rejected"]}
+      }
+    },
+    "glucose": {"$ref": "#/$defs/count"},
+    "meal": {"oneOf": [{"$ref": "#/$defs/count"}, {"type": "null"}], "description": "segment des marqueurs repas, null si le lecteur n'en a pas"},
+    "readings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "epoch", "timestamp", "mg/dL"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "epoch": {"type": ["integer", "null"], "minimum": 0},
+          "timestamp": {"type": ["string", "null"], "pattern": "^\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}$"},
+          "mg/dL": {"type": "integer", "minimum": 9, "maximum": 601, "description": "10 à 600 ; 601 si range=high (HI), 9 si range=low (LO)"},
+          "mmol/L": {"type": "number"},
+          "status": {"type": "integer", "minimum": 0, "description": "statut brut du lecteur ; Glucofi écarte les mesures non hors échelle dont le statut n'est pas 0"},
+          "error": {"type": "string", "description": "mesure illisible (\"invalid date\" : date BCD invalide), epoch et timestamp sont alors null"},
+          "range": {"enum": ["high", "low"], "description": "lecture hors échelle du lecteur (HI / LO)"},
+          "meal": {"enum": ["fasting", "before_meal", "after_meal", "casual", "bedtime", "other"], "description": "marqueur saisi sur le lecteur, absent sans marqueur"}
+        }
+      }
+    }
+  }
+}

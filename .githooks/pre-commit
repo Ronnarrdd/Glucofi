@@ -1,0 +1,10 @@
+#!/bin/sh
+# Activé par : git config core.hooksPath .githooks
+set -eu
+root="$(git rev-parse --show-toplevel)"
+if git diff --cached --name-only | grep -vE '^services/device/accuchek-src/tests/fixtures/' \
+        | grep -qE '(^|/)test\.json$|^raw/|\.db$|\.trace$'; then
+    echo "Refus : données de santé réelles (test.json, raw/, *.db, *.trace hors fixtures) dans le commit." >&2
+    exit 1
+fi
+"$root/scripts/gate.sh" -q

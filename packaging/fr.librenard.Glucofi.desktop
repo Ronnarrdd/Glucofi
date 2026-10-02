@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Glucofi
+GenericName=Suivi glycémique
+Comment=Récupérer les mesures du lecteur Accu-Chek Guide et suivre la dose d'insuline
+Exec=glucofi
+Icon=fr.librenard.Glucofi
+Terminal=false
+Categories=Utility;MedicalSoftware;GTK;
+Keywords=glycémie;diabète;insuline;accu-chek;glucose;
+StartupNotify=true

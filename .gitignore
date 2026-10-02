@@ -1,0 +1,15 @@
+# Données de santé réelles : jamais dans le dépôt
+test.json
+mesures*.json
+*.db
+raw/
+traces/
+
+# Sorties générées
+*.pdf
+services/device/accuchek-src/accuchek
+services/device/accuchek-src/.objs/
+services/device/accuchek-src/.deps/
+__pycache__/
+*.pyc
+.venv/
