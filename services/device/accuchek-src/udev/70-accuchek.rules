@@ -1,0 +1,5 @@
+# accuchek: USB access to Roche Accu-Chek meters for the user of the active
+# local session (ACL set by systemd-logind through uaccess), without root.
+# Same models as `accuchek --known-devices` (checked by `make test`).
+# The 70- prefix matters: uaccess tags must be set before 73-seat-late.rules.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="173a", ATTR{idProduct}=="21d5|21d7|21d8", TAG+="uaccess"
