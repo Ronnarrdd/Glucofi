@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ make libusb-1.0-0-dev python3-jsonschema
+      - name: Build
+        run: make
+      - name: Tests (sanitizers)
+        run: |
+          make test 2>&1 | tee test.log || {
+            grep -E 'FAIL |Sanitizer|runtime error|Error [0-9]' test.log | head -20 | sed 's/^/::error::/'
+            exit 1
+          }
+      - name: Output schema
+        run: make schema-check
+      - name: Fuzz
+        run: make fuzz FUZZ_ARGS="--seed ${{ github.run_number }} --count ${{ github.event_name == 'schedule' && '200000' || '20000' }}"
+      - name: Install layout
+        run: |
+          make install DESTDIR="$PWD/stage"
+          test -x stage/usr/local/bin/accuchek
+          test -f stage/etc/udev/rules.d/70-accuchek.rules

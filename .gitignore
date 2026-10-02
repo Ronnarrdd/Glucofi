@@ -1,0 +1,21 @@
+# build outputs
+/accuchek
+/.objs/
+/.deps/
+*.o
+*.d
+
+# health data: readings and USB traces of a real meter never go in the repo
+*.trace
+!/tests/fixtures/*.trace
+/*.json
+mesures*.json
+readings*.json
+
+# local configuration
+/config.txt
+
+# tooling
+__pycache__/
+*.pyc
+.venv/

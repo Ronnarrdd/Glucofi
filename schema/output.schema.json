@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "accuchek JSON output (format 2)",
+  "description": "Readings downloaded from a Roche Accu-Chek meter, with the meter identity, its clock and the announced/received counters. 'timestamp' is the time shown by the meter; 'epoch' is that time read in the PC time zone, daylight saving time included (mktime with tm_isdst=-1). Written only when the exit code is 0; otherwise stdout is empty and stderr holds 'accuchek: <reason>'.",
+  "type": "object",
+  "required": ["format", "meter", "clock", "glucose", "meal", "readings"],
+  "additionalProperties": false,
+  "$defs": {
+    "time": {"type": "string", "pattern": "^\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}$"},
+    "count": {
+      "type": "object",
+      "required": ["announced", "received"],
+      "properties": {
+        "announced": {"type": ["integer", "null"], "minimum": 0, "description": "number of entries announced by the meter, null if it does not describe its segments"},
+        "received": {"type": "integer", "minimum": 0},
+        "unmatched": {"type": "integer", "minimum": 0, "description": "meal markers with no reading at the same second"}
+      }
+    }
+  },
+  "properties": {
+    "format": {"const": 2},
+    "meter": {
+      "type": ["object", "null"],
+      "description": "identity announced by the meter (MDS attributes), null if it announces none",
+      "required": ["manufacturer", "model", "serial", "firmware", "hardware", "software", "system_id"],
+      "properties": {
+        "manufacturer": {"type": "string"},
+        "model": {"type": "string", "description": "Roche model number, 925 for a Guide"},
+        "serial": {"type": "string"},
+        "firmware": {"type": "string"},
+        "hardware": {"type": "string"},
+        "software": {"type": "string"},
+        "system_id": {"type": "string", "pattern": "^[0-9A-F]*$"}
+      }
+    },
+    "clock": {
+      "type": ["object", "null"],
+      "description": "meter clock read at the start of the session, before any --set-time",
+      "required": ["meter", "pc", "offset_s", "settable", "pc_synchronized", "action"],
+      "properties": {
+        "meter": {"$ref": "#/$defs/time"},
+        "pc": {"oneOf": [{"$ref": "#/$defs/time"}, {"type": "null"}], "description": "null when replaying without --now"},
+        "offset_s": {"type": ["integer", "null"], "description": "meter minus PC, in seconds"},
+        "settable": {"type": "boolean"},
+        "pc_synchronized": {"type": ["boolean", "null"], "description": "PC clock synchronized (NTP); never copied to the meter otherwise"},
+        "action": {"enum": ["not_requested", "set", "within_tolerance", "not_settable", "pc_not_synchronized", "pc_unknown", "unknown", "rejected"]}
+      }
+    },
+    "glucose": {"$ref": "#/$defs/count"},
+    "meal": {"oneOf": [{"$ref": "#/$defs/count"}, {"type": "null"}], "description": "meal marker segment, null if the meter has none"},
+    "readings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "epoch", "timestamp", "mg/dL"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "epoch": {"type": ["integer", "null"], "minimum": 0},
+          "timestamp": {"type": ["string", "null"], "pattern": "^\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}$"},
+          "mg/dL": {"type": "integer", "minimum": 9, "maximum": 601, "description": "10 to 600; 601 when range=high (HI), 9 when range=low (LO)"},
+          "mmol/L": {"type": "number"},
+          "status": {"type": "integer", "minimum": 0, "description": "raw status from the meter; 0 for a normal reading"},
+          "error": {"type": "string", "description": "unreadable reading (\"invalid date\": invalid BCD date), epoch and timestamp are then null"},
+          "range": {"enum": ["high", "low"], "description": "off-scale reading (HI / LO on the meter)"},
+          "meal": {"enum": ["fasting", "before_meal", "after_meal", "casual", "bedtime", "other"], "description": "marker entered on the meter, absent without a marker"}
+        }
+      }
+    }
+  }
+}
