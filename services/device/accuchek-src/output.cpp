@@ -1,5 +1,6 @@
 #include <output.h>
 #include <time.h>
+#include <stdio.h>
 
 namespace accuchek {
 
@@ -66,6 +67,45 @@ std::string outputJson(
         out += (0==i ? "\n    " : ",\n    ") + sampleJson(samples[i], int(i));
     }
     out += samples.empty() ? "]\n}\n" : "\n  ]\n}\n";
+    return out;
+}
+
+std::string outputCsv(
+    const std::vector<Sample> &samples
+) {
+    std::string out = "id,key,epoch,timestamp,mg/dL,mmol/L,status,range,meal,error\n";
+    for(size_t i=0; i<samples.size(); ++i) {
+        const auto &s = samples[i];
+        auto key = s.hasTimeKey ? sampleKey(s) : std::string();
+        auto meal = s.meal ? mealName(s.meal) : "";
+        char line[200];
+        if(!s.validDate) {
+            // the fields of the JSON reading: raw value, no mmol/L, range nor meal
+            snprintf(line, sizeof(line), "%d,%s,,,%d,,%d,,,invalid date\n", int(i), key.c_str(), int(s.value), int(s.status));
+        } else {
+            const char *range = 0;
+            auto mgdl = reportedValue(s, range);
+            snprintf(
+                line,
+                sizeof(line),
+                "%d,%s,%lld,%04d/%02d/%02d %02d:%02d,%d,%.1f,%d,%s,%s,\n",
+                int(i),
+                key.c_str(),
+                (long long)sampleEpoch(s),
+                s.year,
+                s.month,
+                s.day,
+                s.hour,
+                s.minute,
+                mgdl,
+                mmolPerLiter(mgdl),
+                int(s.status),
+                range ? range : "",
+                meal
+            );
+        }
+        out += line;
+    }
     return out;
 }
 

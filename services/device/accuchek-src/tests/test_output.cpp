@@ -90,6 +90,24 @@ TEST(output_count_warnings) {
     }
 }
 
+// an unreadable date keeps the fields JSON gives it: raw value, key, error
+TEST(output_csv_invalid_date_and_old_archive) {
+    auto bad = sampleAt(1, 77);
+    bad.validDate = false;
+    bad.timeKey = ~0ull;
+    bad.meal = kMDC_CTXT_GLU_MEAL_FASTING;
+    auto old = sampleAt(2, 98);
+    old.hasTimeKey = false;
+    CHECK_EQ(
+        outputCsv({bad, old}),
+        std::string(
+            "id,key,epoch,timestamp,mg/dL,mmol/L,status,range,meal,error\n"
+            "0,FFFFFFFFFFFFFFFF,,,77,,0,,,invalid date\n"
+            "1,,1790920800,2026/10/02 08:00,98,5.4,0,,,\n"
+        )
+    );
+}
+
 // replaying without --now: the PC side of the clock is unknown
 TEST(output_clock_with_unknown_pc) {
     SessionReport report;

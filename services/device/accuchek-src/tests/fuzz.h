@@ -37,6 +37,8 @@
         long rejectedSegments = 0;
         long sessionsOk = 0;
         long sessionsFailed = 0;
+        long archivesParsed = 0;
+        long archivesRejected = 0;
         long invariantFailures = 0;
     };
 

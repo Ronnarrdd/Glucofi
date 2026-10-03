@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <cmath>
 #include <algorithm>
 
 namespace accuchek {
@@ -500,7 +501,7 @@ int decodeBcd(
     return 10*hi + lo;
 }
 
-static bool isValidDate(
+bool isValidDate(
     const Sample &s
 ) {
     return (
@@ -946,32 +947,58 @@ time_t sampleEpoch(
     return localMktime(s.year, s.month, s.day, s.hour, s.minute, 0);
 }
 
+std::string sampleKey(
+    const Sample &s
+) {
+    char key[17];
+    snprintf(key, sizeof(key), "%016" PRIX64, s.timeKey);
+    return key;
+}
+
+double mmolPerLiter(
+    int mgdl
+) {
+    return std::round(mgdl * 10 / 18.0) / 10;
+}
+
+int reportedValue(
+    const Sample &s,
+    const char *&range
+) {
+    range = 0;
+    if(kValueHigh==s.value) {
+        range = "high";
+        return kReportedHigh;
+    }
+    if(kValueLow==s.value) {
+        range = "low";
+        return kReportedLow;
+    }
+    return s.value;
+}
+
 std::string sampleJson(
     const Sample &s,
     int id
 ) {
+    auto key = s.hasTimeKey ? ", \"key\":\"" + sampleKey(s) + "\"" : std::string();
     if(!s.validDate) {
-        char buf[160];
+        char buf[200];
         snprintf(
             buf,
             sizeof(buf),
-            "{ \"id\":%6d, \"epoch\":null, \"timestamp\":null, \"mg/dL\":%3d, \"status\":%d, \"error\":\"invalid date\" }",
+            "{ \"id\":%6d, \"epoch\":null, \"timestamp\":null, \"mg/dL\":%3d, \"status\":%d, \"error\":\"invalid date\"%s }",
             id,
             (int)s.value,
-            (int)s.status
+            (int)s.status,
+            key.c_str()
         );
         return buf;
     }
 
-    int mgdl = s.value;
-    const char *range = "";
-    if(kValueHigh==s.value) {
-        mgdl = kReportedHigh;
-        range = ", \"range\":\"high\"";
-    } else if(kValueLow==s.value) {
-        mgdl = kReportedLow;
-        range = ", \"range\":\"low\"";
-    }
+    const char *rangeName = 0;
+    auto mgdl = reportedValue(s, rangeName);
+    auto range = rangeName ? std::string(", \"range\":\"") + rangeName + "\"" : std::string();
 
     std::string meal;
     if(0!=s.meal) {
@@ -982,7 +1009,7 @@ std::string sampleJson(
     snprintf(
         buf,
         sizeof(buf),
-        "{ \"id\":%6d, \"epoch\":%11" PRIu64 ", \"timestamp\":\"%04d/%02d/%02d %02d:%02d\", \"mg/dL\":%3d, \"mmol/L\":%10.6f, \"status\":%d%s%s }",
+        "{ \"id\":%6d, \"epoch\":%11" PRIu64 ", \"timestamp\":\"%04d/%02d/%02d %02d:%02d\", \"mg/dL\":%3d, \"mmol/L\":%4.1f, \"status\":%d%s%s%s }",
         id,
         (uint64_t)sampleEpoch(s),
         s.year,
@@ -991,10 +1018,11 @@ std::string sampleJson(
         s.hour,
         s.minute,
         mgdl,
-        (mgdl / 18.0),
+        mmolPerLiter(mgdl),
         (int)s.status,
-        range,
-        meal.c_str()
+        range.c_str(),
+        meal.c_str(),
+        key.c_str()
     );
     return buf;
 }

@@ -1,5 +1,7 @@
 #include "fuzz.h"
 #include <session.h>
+#include <output.h>
+#include <merge.h>
 #include <trace.h>
 #include <stdio.h>
 #include <string.h>
@@ -188,6 +190,69 @@ static void fuzzParsers(
     }
 }
 
+// a --merge archive written by accuchek, then mutated: what parses must
+// write the same text again once read back, and merge without losing anything
+static void fuzzArchive(
+    Rng &rng,
+    Stats &stats
+) {
+    std::vector<Sample> samples;
+    for(const auto &r : randomRecords(rng)) {
+        Sample s = {r.year, r.month, r.day, r.hour, r.minute, r.value, uint16_t(rng.below(3)), true};
+        auto bcd = [](int v) { return uint64_t(((v / 10) << 4) | (v % 10)); };
+        s.timeKey = (bcd(r.year / 100) << 56) | (bcd(r.year % 100) << 48) | (bcd(r.month) << 40) | (bcd(r.day) << 32) |
+            (bcd(r.hour) << 24) | (bcd(r.minute) << 16) | (bcd(int(rng.below(60))) << 8);
+        s.hasTimeKey = (0!=rng.below(4));
+        if(0==rng.below(3)) {
+            s.meal = kMDC_CTXT_GLU_MEAL_FASTING;
+        }
+        if(0==rng.below(8)) {
+            s.value = rng.below(2) ? kValueHigh : kValueLow;
+        }
+        samples.push_back(s);
+    }
+    SessionReport report;
+    auto text = outputJson(report, samples);
+    std::string input;
+    if(rng.below(2)) {
+        sim::Bytes bytes(text.begin(), text.end());
+        auto mutated = mutate(rng, bytes);
+        input.assign(mutated.begin(), mutated.end());
+    } else {
+        // still JSON: one digit changed reaches the reading checks
+        input = text;
+        for(auto n = 1 + rng.below(3); n; --n) {
+            auto at = rng.below(input.size());
+            while(at<input.size() && !('0'<=input[at] && input[at]<='9')) {
+                ++at;
+            }
+            if(at<input.size()) {
+                input[at] = char('0' + rng.below(10));
+            }
+        }
+    }
+
+    Archive archive;
+    std::string error;
+    if(!parseArchive(input, archive, error)) {
+        ++stats.archivesRejected;
+        return;
+    }
+    ++stats.archivesParsed;
+    auto once = outputJson(report, archive.samples);
+    Archive back;
+    if(!parseArchive(once, back, error) || outputJson(report, back.samples)!=once) {
+        ++stats.invariantFailures;
+        fprintf(stderr, "iteration %ld: archive not written back identically (%s)\n", (long)gCurrentIteration, error.c_str());
+    }
+    std::vector<Sample> merged;
+    auto kept = mergeSamples(archive.samples, samples, merged);
+    if(merged.size()!=kept + samples.size() || archive.samples.size()<kept) {
+        ++stats.invariantFailures;
+        fprintf(stderr, "iteration %ld: merge sizes\n", (long)gCurrentIteration);
+    }
+}
+
 // a valid session where one device message is mutated
 static void fuzzSession(
     Rng &rng,
@@ -255,6 +320,9 @@ Stats run(
         } else {
             fuzzSession(rng, stats);
         }
+        // its own generator: the iterations above stay those of earlier seeds
+        Rng archiveRng(seed ^ (0xD1B54A32D192ED03ull * uint64_t(i + 1)));
+        fuzzArchive(archiveRng, stats);
         ++stats.iterations;
     }
     gCurrentIteration = -1;
