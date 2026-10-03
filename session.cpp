@@ -331,7 +331,15 @@ void downloadSamples(
         // data messages carry the meter's own invoke ids, our next request
         // follows the answer to this one
         auto answerInvokeId = invokeId;
+        size_t messages = 0;
         while(!empty) {
+            if(messages==options.maxDataMessages) {
+                fail(
+                    kExitProtocol,
+                    std::string("no last ") + dataName + " after " + std::to_string(messages) + " messages"
+                );
+            }
+            ++messages;
             receive(dataName);
             updateInvokeId();
             uint32_t u0 = 0;

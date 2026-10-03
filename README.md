@@ -64,6 +64,8 @@ accuchek --config my-meters.txt                 # add or disable models (format:
 accuchek --help
 ```
 
+Ambiguous command lines are refused with exit code 1 rather than guessed: a `DEVICE_INDEX` that is not a plain number, an option given twice, `--capture` or `DEVICE_INDEX` with `--replay`, a `--now` that is not a real local time (2026/02/30, or 02:30 on the night clocks spring forward).
+
 `--set-time` only writes the clock when the meter declares it settable and the PC clock is NTP synchronized (`adjtimex` without `TIME_ERROR`). A meter that refuses does not stop the download (`"action": "rejected"`).
 
 A trace holds all your readings: it is health data. Keep it out of public places; the `.gitignore` ignores `*.trace` outside `tests/fixtures/`.
@@ -85,6 +87,7 @@ One JSON object, written only after the whole download succeeded. Formal definit
 }
 ```
 
+- `glucose.announced` is the count the meter gives for its glucose segment, `received` the readings actually downloaded (same for `meal`). When they differ, the download still succeeds (exit code 0) and stderr gets `accuchek: warning: the meter announced N readings, M received`.
 - `timestamp` is the meter time. `epoch` is that time read in the PC time zone, summer time included.
 - Every reading is written, whatever its `status` (raw value from the meter, 0 for a normal reading).
 - Off-scale readings get `"range": "high"` with 601 mg/dL (HI) or `"range": "low"` with 9 mg/dL (LO), as in the Tidepool driver.
@@ -96,7 +99,7 @@ One JSON object, written only after the whole download succeeded. Formal definit
 
 ## Exit codes
 
-On failure stdout stays empty (never a partial download) and stderr holds one line, `accuchek: <reason>`.
+On failure stdout stays empty (never a partial download) and stderr holds one line, `accuchek: <reason>`. The one exception is code 6: stdout itself failed while the JSON was being written, so whatever reached it is incomplete.
 
 | Code | Meaning |
 | --- | --- |
@@ -106,6 +109,7 @@ On failure stdout stays empty (never a partial download) and stderr holds one li
 | 3 | meter found but access denied: the udev rule is missing or not loaded |
 | 4 | USB transfer failed: timeout, meter unplugged |
 | 5 | protocol: the meter aborted the association or answered something unexpected |
+| 6 | output: stdout closed or not writable (disk full, broken pipe); what reached it is incomplete, throw it away |
 
 ## Troubleshooting
 
@@ -120,18 +124,24 @@ On failure stdout stays empty (never a partial download) and stderr holds one li
 make test          # unit and session tests, with ASan / UBSan when available
 make schema-check  # replay every fixture, validate the JSON (pip install jsonschema)
 make fuzz          # 200 000 mutated packets against guard pages, 0 crash expected
+make hooks         # once per clone: make test (warnings as errors) before every commit
 ```
+
+The code builds without a single warning under `-Wall -Wextra -Wshadow`; CI builds with `WERROR=-Werror` and also runs the command line tests against a binary built with ASan and UBSan.
 
 | File | Role |
 | --- | --- |
 | `protocol.h/.cpp` | ISO/IEEE 11073 constants, outgoing messages (clock setting included), decoding of incoming messages, JSON. No I/O. |
 | `session.h/.cpp` | Full download sequence over an abstract `Transport`. Failures throw `SessionError`. |
 | `trace.h/.cpp` | Recorded USB exchanges: `RecordingTransport` (`--capture`) and `ReplayTransport` (`--replay`). |
-| `main.cpp` | Command line, USB discovery (libusb), `LibusbTransport`, JSON output. |
+| `output.h/.cpp` | The JSON object of a download (`outputJson`), built in memory. No I/O. |
+| `main.cpp` | Command line, USB discovery (libusb), `LibusbTransport`, writing the JSON on stdout. |
 | `tests/sim.h` | Meter simulator building packets with the Tidepool driver layout. |
 | `tests/fixtures/` | `*.trace`: simulated sessions; `guide925_*.hex`: answers from a real Guide 925, serial number, system id and dates replaced. |
 
-Every decoder takes the number of bytes actually received and reads through `Reader`, which refuses to go past the end: a truncated or inconsistent packet stops the download with a precise message. The fuzzer puts each mutated packet right before a protected memory page, so reading a single byte too far crashes even without AddressSanitizer. On a crash it prints the command that replays that iteration (`FUZZ_ARGS="--seed S --from N --count 1" make fuzz`).
+Every decoder takes the number of bytes actually received and reads through `Reader`, which refuses to go past the end: a truncated or inconsistent packet stops the download with a precise message. A segment whose last message never comes stops after `kMaxDataMessages` (4096) messages, exit code 5, instead of looping forever. The fuzzer puts each mutated packet right before a protected memory page, so reading a single byte too far crashes even without AddressSanitizer. On a crash it prints the command that replays that iteration (`FUZZ_ARGS="--seed S --from N --count 1" make fuzz`).
+
+`accuchek --version` comes from `git describe` in a clone (`2.1.0-3-gabcdef0` three commits after `v2.1.0`), from the `VERSION` file in a copy of the sources. To release: bump `VERSION`, commit, `git tag vX.Y.Z`, push the tag. `make test` fails when the tag and `VERSION` disagree.
 
 After changing the simulator, regenerate the fixtures with `ACCUCHEK_UPDATE_FIXTURES=1 make test` and review the diff.
 
