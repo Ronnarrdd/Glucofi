@@ -83,7 +83,17 @@ Si Glucofi affiche « Accès USB au lecteur refusé », débrancher et rebranche
 1. Premier lancement : nom du patient, protocole de l'ordonnance, date de début et doses de départ.
 2. Brancher le lecteur, cliquer **Récupérer**. Les nouvelles mesures sont ajoutées (les doublons sont ignorés) avec leur marqueur repas, et une copie brute de chaque lecture est gardée dans `~/.local/share/glucofi/raw/`. Si l'horloge du lecteur s'écarte de plus de 60 s de celle du PC et que l'heure du PC est synchronisée (NTP), le lecteur est remis à l'heure. Un message signale une lecture incomplète, des marqueurs sans mesure ou une horloge qui n'a pas pu être corrigée.
 3. Onglet **Aujourd'hui** : doses du matin et du soir, proposition avec bouton **Valider**, alertes, derniers matins avec leur marqueur, lecteur (modèle, numéro de série, logiciel) et état de son horloge.
-4. Onglet **Mesures** : filtres par période, moment de la journée et marqueur repas, résumé de la sélection, mesures groupées par jour avec la glycémie du matin retenue (pastille Retenu).
+4. Onglet **Mesures** : filtres par période, moment de la journée et marqueur repas ; résumé de la sélection (moyenne, part dans l'objectif, hypoglycémies, barre de répartition sous / dans / au-dessus de l'objectif) ; mesures groupées par jour (« Aujourd'hui », « Hier », puis la date), avec la glycémie du matin retenue dans l'en-tête du jour et une pastille **Retenue** sur sa ligne. Chaque mesure montre l'icône de son marqueur, sur le modèle de celles du lecteur, et sa valeur colorée selon l'objectif, avec une flèche ↑ ou ↓ hors objectif :
+
+   | Icône | Marqueur |
+   | --- | --- |
+   | pomme barrée | À jeun |
+   | pomme | Avant repas |
+   | trognon | Après repas |
+   | lune | Coucher |
+   | astérisque | Autre moment |
+   | point d'interrogation | Marqueur inconnu |
+   | anneau | Sans marqueur |
 5. Menu > **Exporter en PDF…** : choix de la période, puis du fichier.
 
 Données : `~/.local/share/glucofi/glucofi.db` (SQLite). Journal : `~/.local/state/glucofi/glucofi.log` (lectures, imports, validations de dose).
@@ -98,8 +108,8 @@ services/store/    SQLite : mesures et marqueurs (import idempotent), lecteurs, 
 services/dosing/   moteur de titration pur et déterministe
 services/charts/   statistiques + figures matplotlib (écran et PDF)
 services/report/   rapport PDF (reportlab)
-app/               interface GTK4 / libadwaita (state.py = logique sans GTK, testée)
-evals/             rejeu du moteur contre un oracle indépendant
+app/               interface GTK4 / libadwaita (state.py, measures.py = logique sans GTK, testée ; icons/ = icônes des marqueurs)
+evals/             rejeu du moteur et de l'onglet Mesures contre des oracles indépendants
 packaging/         règle udev, .desktop, icône, installation système
 scripts/           gate.sh (tests rapides), screenshots.py (captures de l'interface)
 ```
@@ -116,6 +126,8 @@ git subtree pull --prefix=services/device/accuchek-src https://github.com/Ronnar
 git config core.hooksPath .githooks        # hook pre-commit : tests + refus des données réelles
 scripts/gate.sh                            # tests rapides
 python3 -m evals.replay_history --synthetic 200
+python3 -m evals.measures_view --synthetic 100  # onglet Mesures : toutes les combinaisons de filtres
+python3 -m scripts.screenshots demo.json /tmp/captures measures  # Mesures en clair, sombre et 360 px
 python3 -m evals.device_smoke              # lecture réelle du lecteur branché (matériel requis)
 python3 -m evals.accuchek_replay           # rejoue les traces USB (synthétiques + ~/.local/share/glucofi/traces)
 python3 -m evals.accuchek_errors           # pannes injectées (timeout, débranchement, abandon)
@@ -123,7 +135,7 @@ make -C services/device/accuchek-src fuzz  # 200 000 paquets USB mutés contre l
 python3 -m evals.store_migration --db COPIE.db  # rapport avant/après d'une migration, sur une copie
 ```
 
-L'eval de rejeu rejoue chaque jour d'un historique (proposition à 20:00, validée), compare le moteur à un oracle réécrit depuis le texte des règles et vérifie les invariants : dose jamais négative, au plus un changement par jour, preuves conformes. Seuil : 100 %. Le rapport CSV est écrit dans `/tmp/glucofi-eval/`. Les evals utilisent un protocole fictif, qui n'est pas une recommandation.
+L'eval de rejeu rejoue chaque jour d'un historique (proposition à 20:00, validée), compare le moteur à un oracle réécrit depuis le texte des règles et vérifie les invariants : dose jamais négative, au plus un changement par jour, preuves conformes. Seuil : 100 %. L'eval de l'onglet Mesures vérifie, pour chaque combinaison de filtres, que chaque mesure apparaît une fois, dans l'ordre, avec le bon niveau, que la glycémie retenue est celle du moteur et que la barre de répartition reste fidèle aux pourcentages. Seuil : 100 %. Les rapports CSV sont écrits dans `/tmp/glucofi-eval/`. Les evals utilisent un protocole fictif, qui n'est pas une recommandation.
 
 Les exports de mesures (`test.json`, `mesures*.json`), `raw/`, `traces/` et `*.db` contiennent des données de santé : ils sont exclus du dépôt (`.gitignore` + hook).
 

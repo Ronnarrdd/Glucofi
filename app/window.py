@@ -11,11 +11,13 @@ from pathlib import Path
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from app.dialogs import manual_dose_dialog, onboarding_dialog, preferences_dialog
-from app.measures import MEAL_FILTERS, measure_view
+from app.measures_page import MeasuresPage
 from app.state import AppState, StaleProposal, clock_text, import_message, meter_text, morning_rule_text
+from app.widgets import clear as _clear
+from app.widgets import page as _page
+from app.widgets import toggle_group as _toggle_group
 from contracts import MEAL_LABELS_FR, RULE_LABELS_FR, AlertLevel, DoseProposal, Reading
 from services import device
-from services.charts import PERIODS
 from services.dosing import fmt_g_l, fmt_mg_dl
 
 log = logging.getLogger("glucofi.ui")
@@ -25,11 +27,6 @@ CHART_DPI = 200
 CHART_WIDTH_PX = 860
 CHART_PERIODS = (("14", "14 jours"), ("30", "30 jours"), ("90", "90 jours"))
 DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
-
-
-def _clear(box: Gtk.Box) -> None:
-    while (child := box.get_first_child()) is not None:
-        box.remove(child)
 
 
 def _glycemia_class(reading: Reading, state: AppState) -> str:
@@ -52,32 +49,11 @@ def _meal_suffix(reading: Reading) -> str:
     return f" · {MEAL_LABELS_FR[reading.meal]}" if reading.meal is not None else ""
 
 
-def _page(child: Gtk.Widget, max_width: int = 820) -> Gtk.ScrolledWindow:
-    clamp = Adw.Clamp(maximum_size=max_width, child=child)
-    child.set_margin_top(18)
-    child.set_margin_bottom(24)
-    child.set_margin_start(12)
-    child.set_margin_end(12)
-    return Gtk.ScrolledWindow(child=clamp, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
-
-
-def _toggle_group(options, active: str, on_change) -> Adw.ToggleGroup:
-    group = Adw.ToggleGroup(halign=Gtk.Align.CENTER)
-    for name, label in options:
-        group.add(Adw.Toggle(name=name, label=label))
-    group.set_active_name(active)
-    group.connect("notify::active-name", lambda g, _p: on_change(g.get_active_name()))
-    return group
-
-
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application, state: AppState):
         super().__init__(application=application, title="Glucofi", default_width=1000, default_height=780)
         self.state = state
         self.chart_days = "30"
-        self.measure_days = "90"
-        self.measure_period = "all"
-        self.measure_meal = "all"
         self.charts_dirty = True
         self.busy = False
         self._proposal: DoseProposal | None = None
@@ -90,7 +66,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.today_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         self.stack.add_titled_with_icon(_page(self.today_box), "today", "Aujourd'hui", "x-office-calendar-symbolic")
         self.stack.add_titled_with_icon(self._build_charts_page(), "charts", "Graphiques", "x-office-spreadsheet-symbolic")
-        self.stack.add_titled_with_icon(self._build_measures_page(), "measures", "Mesures", "view-list-symbolic")
+        self.measures = MeasuresPage(state, self.fetch_from_device)
+        self.stack.add_titled_with_icon(self.measures.widget, "measures", "Mesures", "view-list-symbolic")
         self.doses_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         self.stack.add_titled_with_icon(_page(self.doses_box), "doses", "Doses", "document-edit-symbolic")
 
@@ -130,6 +107,7 @@ class MainWindow(Adw.ApplicationWindow):
         breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600sp"))
         breakpoint.add_setter(switcher_bar, "reveal", True)
         breakpoint.add_setter(switcher, "visible", False)
+        self.measures.add_narrow_setters(breakpoint)
         self.add_breakpoint(breakpoint)
 
         self.refresh()
@@ -323,7 +301,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._proposal = self.state.proposal()
         self._build_today()
         self._build_doses()
-        self._fill_measures()
+        self.measures.refresh()
         self.charts_dirty = True
         if self.stack.get_visible_child_name() == "charts":
             self._build_charts()
@@ -434,7 +412,7 @@ class MainWindow(Adw.ApplicationWindow):
         number.add_css_class("dose-value")
         if accent:
             number.add_css_class("accent")
-        sub = Gtk.Label(label=subtitle)
+        sub = Gtk.Label(label=subtitle, wrap=True, justify=Gtk.Justification.CENTER)
         sub.add_css_class("dim-label")
         for widget in (heading, number, sub):
             card.append(widget)
@@ -581,100 +559,3 @@ class MainWindow(Adw.ApplicationWindow):
         card.append(v)
         card.append(t)
         return card
-
-    # Mesures
-
-    def _build_measures_page(self) -> Gtk.Widget:
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        filters = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
-        filters.append(_toggle_group((("30", "30 jours"), ("90", "90 jours"), ("all", "Tout")), self.measure_days, self._on_measure_days))
-        filters.append(_toggle_group((("all", "Tous moments"),) + tuple((p, p) for p in PERIODS), self.measure_period, self._on_measure_period))
-        outer.append(filters)
-        meal_row = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
-        caption = Gtk.Label(label="Marqueur")
-        caption.add_css_class("dim-label")
-        meal_model = Gtk.StringList()
-        for _key, label in MEAL_FILTERS:
-            meal_model.append(label)
-        self.measure_meal_dropdown = Gtk.DropDown(model=meal_model, selected=0, valign=Gtk.Align.CENTER)
-        self.measure_meal_dropdown.set_tooltip_text("Filtrer par le marqueur repas saisi sur le lecteur")
-        self.measure_meal_dropdown.connect("notify::selected", self._on_measure_meal)
-        meal_row.append(caption)
-        meal_row.append(self.measure_meal_dropdown)
-        outer.append(meal_row)
-        self.measures_summary = Gtk.Box(spacing=12, homogeneous=True)
-        outer.append(self.measures_summary)
-        self.measures_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        self.measures_list.add_css_class("boxed-list")
-        self.measures_list.set_header_func(self._measure_header)
-        outer.append(self.measures_list)
-        return _page(outer, max_width=1100)
-
-    def _on_measure_days(self, name: str | None) -> None:
-        if name:
-            self.measure_days = name
-            self._fill_measures()
-
-    def _on_measure_period(self, name: str | None) -> None:
-        if name:
-            self.measure_period = name
-            self._fill_measures()
-
-    def _on_measure_meal(self, dropdown: Gtk.DropDown, _pspec) -> None:
-        selected = dropdown.get_selected()
-        if selected >= len(MEAL_FILTERS):
-            return
-        name = MEAL_FILTERS[selected][0]
-        if name == self.measure_meal:
-            return
-        self.measure_meal = name
-        self._fill_measures()
-
-    def _measure_header(self, row: Gtk.ListBoxRow, _before) -> None:
-        header = getattr(row, "measure_header", None)
-        if not header:
-            row.set_header(None)
-            return
-        label = Gtk.Label(label=header, xalign=0)
-        label.add_css_class("title-4")
-        label.set_margin_top(12)
-        label.set_margin_bottom(6)
-        row.set_header(label)
-
-    def _fill_measures(self) -> None:
-        _clear(self.measures_summary)
-        self.measures_list.remove_all()
-        if self.state.settings is None:
-            self.measures_list.append(Adw.ActionRow(title="Recopiez d'abord le protocole de l'ordonnance"))
-            return
-        days = None if self.measure_days == "all" else int(self.measure_days)
-        view = measure_view(
-            self.state.readings(days=days),
-            self.state.settings,
-            self.measure_period,
-            self.measure_meal,
-            self.state.meters(),
-        )
-        for title, value in view.summary.cards:
-            self.measures_summary.append(self._stat_card(title, value))
-        if not view.lines:
-            title = (
-                "Aucune mesure : branchez le lecteur puis cliquez sur Récupérer"
-                if self.state.store.count_readings() == 0
-                else "Aucune mesure pour ce filtre"
-            )
-            self.measures_list.append(Adw.ActionRow(title=title))
-            return
-        for line in view.lines:
-            row = Adw.ActionRow(title=line.title, subtitle=line.subtitle)
-            row.measure_header = line.header  # type: ignore[attr-defined]
-            if line.retained:
-                badge = Gtk.Label(label="Retenu", valign=Gtk.Align.CENTER)
-                badge.add_css_class("accent")
-                badge.add_css_class("heading")
-                row.add_suffix(badge)
-            value = Gtk.Label(label=line.value, valign=Gtk.Align.CENTER)
-            value.add_css_class("heading")
-            value.add_css_class(line.css)
-            row.add_suffix(value)
-            self.measures_list.append(row)
