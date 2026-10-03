@@ -30,6 +30,7 @@ class AccuchekExit(IntEnum):
     ACCESS_DENIED = 3  # lecteur trouvé mais ouverture refusée
     TRANSFER = 4  # transfert USB échoué : timeout, lecteur débranché
     PROTOCOL = 5  # le lecteur a interrompu l'échange ou répondu autre chose
+    OUTPUT = 6  # stdout fermé ou non inscriptible (disque plein, pipe cassé) : ce qu'il contient est incomplet
 
 
 def local_epoch(device_time: datetime) -> int:

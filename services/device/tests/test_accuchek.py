@@ -459,6 +459,7 @@ class FetchTest(unittest.TestCase):
             AccuchekExit.ACCESS_DENIED: DeviceAccessDenied,
             AccuchekExit.TRANSFER: DeviceReadFailed,
             AccuchekExit.PROTOCOL: DeviceProtocolError,
+            AccuchekExit.OUTPUT: DeviceReadFailed,
             134: DeviceReadFailed,
         }
         for code, error in cases.items():
@@ -472,6 +473,28 @@ class FetchTest(unittest.TestCase):
             self.run_fetch(fake("", code=4, stderr="accuchek: failed to receive message data segment: Operation timed out\n"))
         self.assertIn("Aucune mesure n'a été importée", str(ctx.exception))
         self.assertIn("Operation timed out", str(ctx.exception))
+
+    # code 6 tombait dans le message générique "Relancez sudo packaging/install-system.sh"
+    def test_output_error_does_not_blame_the_installation(self):
+        with self.assertRaises(DeviceReadFailed) as ctx:
+            self.run_fetch(fake("", code=6, stderr="accuchek: cannot write on stdout: No space left on device\n"))
+        self.assertNotIsInstance(ctx.exception, DeviceProtocolError)
+        self.assertIn("Aucune mesure n'a été importée", str(ctx.exception))
+        self.assertIn("espace disque", str(ctx.exception))
+        self.assertIn("No space left on device", str(ctx.exception))
+        self.assertNotIn("install-system.sh", str(ctx.exception))
+
+    # accuchek 2.1 écrit des "accuchek: warning: ..." avant l'erreur fatale
+    def test_reason_skips_warning_lines(self):
+        from services.device import accuchek
+
+        stderr = (
+            "accuchek: warning: cannot write trace t.trace, it is incomplete\n"
+            "accuchek: failed to receive message data segment: Operation timed out\n"
+        )
+        self.assertEqual(accuchek.accuchek_reason(stderr), "failed to receive message data segment: Operation timed out")
+        stderr = "accuchek: failed to receive message data segment: No such device\naccuchek: warning: late\n"
+        self.assertEqual(accuchek.accuchek_reason(stderr), "failed to receive message data segment: No such device")
 
     def test_empty_meter_is_not_an_error(self):
         for text in ("[\n]\n", format2(readings="[]", glucose='{"announced":0, "received":0}')):
@@ -566,6 +589,18 @@ class RealBinaryTest(unittest.TestCase):
         with self.assertRaises(DeviceProtocolError) as ctx:
             self.fetch_trace(self.broken("< E60000020000"))
         self.assertIn("association abort", str(ctx.exception))
+
+    def test_unwritable_stdout_is_an_output_error(self):
+        from services.device import accuchek
+
+        with open("/dev/full", "w") as full:
+            proc = subprocess.run(
+                [str(ACCUCHEK_BUILD), "--replay", str(FIXTURE)], stdout=full, stderr=subprocess.PIPE, text=True, check=False
+            )
+        self.assertEqual(proc.returncode, AccuchekExit.OUTPUT)
+        error = accuchek.exit_error(proc.returncode, proc.stderr)
+        self.assertIs(type(error), DeviceReadFailed)
+        self.assertIn("No space left on device", str(error))
 
     def test_debug_logs_do_not_break_json(self):
         with mock.patch.dict(os.environ, {"ACCUCHEK_DBG": "1"}):

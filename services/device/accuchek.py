@@ -376,16 +376,24 @@ def exit_error(code: int, stderr: str) -> DeviceError:
         return DeviceProtocolError(
             f"Le lecteur a répondu de façon inattendue. Aucune mesure n'a été importée. {RETRY_HINT}{detail}"
         )
+    if code == AccuchekExit.OUTPUT:
+        return DeviceReadFailed(
+            "accuchek a lu le lecteur mais n'a pas pu transmettre les mesures à Glucofi. "
+            f"Aucune mesure n'a été importée. Vérifiez l'espace disque puis réessayez.{detail}"
+        )
     return DeviceReadFailed(
         f"accuchek a échoué (code {code}). Relancez sudo packaging/install-system.sh puis réessayez.{detail}"
     )
 
 
 def accuchek_reason(stderr: str) -> str:
-    """Raison donnée par accuchek ("accuchek: ..." sur stderr), sinon la dernière ligne non vide."""
+    """Raison donnée par accuchek ("accuchek: ..." sur stderr), sinon la dernière ligne non vide.
+
+    Les lignes "accuchek: warning: ..." (trace incomplète, mesures manquantes) ne sont pas la raison.
+    """
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
     for line in reversed(lines):
-        if line.startswith("accuchek: "):
+        if line.startswith("accuchek: ") and not line.startswith("accuchek: warning: "):
             return line.removeprefix("accuchek: ")
     return lines[-1][:300] if lines else ""
 
