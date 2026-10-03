@@ -10,7 +10,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-from app.dialogs import manual_dose_dialog, onboarding_dialog, preferences_dialog
+from app.dialogs import manual_dose_dialog, note_dialog, onboarding_dialog, preferences_dialog
 from app.measures_page import MeasuresPage
 from app.state import AppState, StaleProposal, clock_text, import_message, meter_text, morning_rule_text
 from app.widgets import clear as _clear
@@ -27,6 +27,11 @@ CHART_DPI = 200
 CHART_WIDTH_PX = 860
 CHART_PERIODS = (("14", "14 jours"), ("30", "30 jours"), ("90", "90 jours"))
 DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
+ALERT_STYLES = {
+    AlertLevel.DANGER: ("dialog-error-symbolic", "error"),
+    AlertLevel.WARNING: ("dialog-warning-symbolic", "warning"),
+    AlertLevel.INFO: ("dialog-information-symbolic", None),
+}
 
 
 def _glycemia_class(reading: Reading, state: AppState) -> str:
@@ -66,7 +71,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.today_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         self.stack.add_titled_with_icon(_page(self.today_box), "today", "Aujourd'hui", "x-office-calendar-symbolic")
         self.stack.add_titled_with_icon(self._build_charts_page(), "charts", "Graphiques", "x-office-spreadsheet-symbolic")
-        self.measures = MeasuresPage(state, self.fetch_from_device)
+        self.measures = MeasuresPage(state, self.fetch_from_device, self.refresh)
         self.stack.add_titled_with_icon(self.measures.widget, "measures", "Mesures", "view-list-symbolic")
         self.doses_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         self.stack.add_titled_with_icon(_page(self.doses_box), "doses", "Doses", "document-edit-symbolic")
@@ -327,9 +332,10 @@ class MainWindow(Adw.ApplicationWindow):
         for alert in proposal.alerts:
             banner = Adw.ActionRow(title=alert.message, title_lines=0)
             banner.set_use_markup(False)
-            icon = "dialog-error-symbolic" if alert.level is AlertLevel.DANGER else "dialog-warning-symbolic"
+            icon, css = ALERT_STYLES[alert.level]
             banner.add_prefix(Gtk.Image(icon_name=icon))
-            banner.add_css_class("error" if alert.level is AlertLevel.DANGER else "warning")
+            if css:
+                banner.add_css_class(css)
             frame = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
             frame.add_css_class("boxed-list")
             frame.append(banner)
@@ -363,13 +369,24 @@ class MainWindow(Adw.ApplicationWindow):
             title="Glycémies du matin depuis la dernière dose validée",
             description=morning_rule_text(self.state.settings),
         )
-        if proposal.mornings:
-            for m in reversed(proposal.mornings[-10:]):
-                mrow = Adw.ActionRow(
-                    title=f"{DAYS_FR[m.day.weekday()]} {m.day:%d/%m/%Y}",
-                    subtitle=f"{m.reading.device_time:%H:%M} · {fmt_mg_dl(m.reading.mg_dl)}{_meal_suffix(m.reading)}",
-                )
-                mrow.add_suffix(_value_label(m.reading, self.state))
+        shown = sorted([(m.reading, False) for m in proposal.mornings] + [(r, True) for r in proposal.excluded])
+        if shown:
+            for reading, excluded in reversed(shown[-10:]):
+                subtitle = f"{reading.device_time:%H:%M} · {fmt_mg_dl(reading.mg_dl)}{_meal_suffix(reading)}"
+                if excluded:
+                    subtitle += f"\nÉcartée de l'ajustement : {reading.note.summary}"
+                elif reading.note is not None and reading.note.summary:
+                    subtitle += f"\nNote : {reading.note.summary}"
+                mrow = Adw.ActionRow(title=f"{DAYS_FR[reading.day.weekday()]} {reading.day:%d/%m/%Y}", subtitle=subtitle)
+                mrow.set_use_markup(False)
+                value = _value_label(reading, self.state)
+                if excluded:
+                    mrow.add_css_class("dim-label")
+                    value.set_tooltip_text("Écartée de l'ajustement de la dose par une note")
+                mrow.add_suffix(value)
+                mrow.set_activatable(True)
+                mrow.set_tooltip_text("Ajouter ou modifier une note")
+                mrow.connect("activated", lambda _r, rd=reading: note_dialog(self, self.state, rd, self.refresh))
                 mornings.add(mrow)
         else:
             mornings.add(Adw.ActionRow(title="Aucune glycémie du matin pour l'instant"))
@@ -383,7 +400,10 @@ class MainWindow(Adw.ApplicationWindow):
         ))
         info.add(Adw.ActionRow(
             title="Mesures enregistrées",
-            subtitle=f"{self.state.store.count_readings()} dont {self.state.store.count_markers()} avec un marqueur repas",
+            subtitle=(
+                f"{self.state.store.count_readings()} dont {self.state.store.count_markers()} avec un marqueur repas"
+                f" et {self.state.store.count_notes()} avec une note"
+            ),
         ))
         meters = self.state.meters()
         if meters:
@@ -456,6 +476,8 @@ class MainWindow(Adw.ApplicationWindow):
             group.add(Adw.ActionRow(title="Aucune dose enregistrée"))
         for i, change in enumerate(reversed(changes)):
             details = "\n".join(change.evidence) or change.note
+            if change.excluded:
+                details += "\nÉcartées : " + "\n".join(change.excluded)
             row = Adw.ActionRow(
                 title=f"Matin {change.morning_ui} UI · Soir {change.evening_ui} UI",
                 subtitle=f"Depuis le {change.effective:%d/%m/%Y %H:%M} · {RULE_LABELS_FR[change.rule]}" + (f"\n{details}" if details else ""),

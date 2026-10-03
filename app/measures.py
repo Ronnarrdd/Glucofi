@@ -12,13 +12,13 @@ hors objectif porte aussi une flèche, pour ne pas reposer sur la couleur seule.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Sequence
 
 from contracts import MEAL_LABELS_FR, DosingSettings, MeterInfo, Reading
 from services.charts import PERIODS, compute_stats, period_of
-from services.dosing import fmt_g_l, fmt_mg_dl, morning_readings
+from services.dosing import excluded_from_dosing, exclusion_refused, fmt_g_l, fmt_mg_dl, morning_readings
 
 WEEKDAYS_FR = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 MONTHS_FR = (
@@ -54,6 +54,10 @@ LEVEL_CSS = {"low": "error", "in": "success", "high": "warning"}
 LEVEL_ICONS = {"low": "go-down-symbolic", "in": None, "high": "go-up-symbolic"}
 RETAINED_ICON = "daytime-sunrise-symbolic"
 RETAINED_TOOLTIP = "Glycémie du matin retenue pour l'ajustement de la dose du soir"
+EXCLUDED_ICON = "action-unavailable-symbolic"
+EXCLUDED_TOOLTIP = "Écartée de l'ajustement de la dose par une note"
+REFUSED_TOOLTIP = "Marquée à écarter, mais sous le seuil bas : une glycémie basse compte toujours pour l'ajustement"
+NOTE_ICON = "document-edit-symbolic"
 
 _MEAL_KEYS = {key for key, _label in MEAL_FILTERS}
 
@@ -76,6 +80,10 @@ class MeasureLine:
     level_label: str
     retained: bool
     meter: str | None
+    note: str | None = None
+    excluded: bool = False
+    exclusion_refused: bool = False
+    reading: Reading | None = field(default=None, compare=False)
 
     @property
     def title(self) -> str:
@@ -87,6 +95,10 @@ class MeasureLine:
         if self.meter is not None:
             parts.append(self.meter)
         return " · ".join(parts)
+
+    @property
+    def note_tooltip(self) -> str:
+        return "Modifier la note" if self.note else "Ajouter une note (repas, activité, effet secondaire…)"
 
     @property
     def css(self) -> str:
@@ -256,6 +268,10 @@ def _line(reading: Reading, settings: DosingSettings, names: dict[str, str] | No
         level_label=level_label(level, settings),
         retained=retained,
         meter=None if names is None else names.get(reading.meter_serial or "", "Lecteur inconnu"),
+        note=reading.note.summary or None if reading.note is not None else None,
+        excluded=excluded_from_dosing(reading, settings),
+        exclusion_refused=exclusion_refused(reading, settings),
+        reading=reading,
     )
 
 

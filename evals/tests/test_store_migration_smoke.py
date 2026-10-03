@@ -32,7 +32,24 @@ class StoreMigrationSmokeTest(TimezoneParis, unittest.TestCase):
         self.assertEqual(code, 0, out.getvalue())
         self.assertIn("| corrigée -1 h (été) | 2 |", out.getvalue())
         self.assertIn("Migration v2 -> v3", out.getvalue())
+        self.assertIn("Migration v3 -> v4", out.getvalue())
+        self.assertIn("Doses validées : 0, inchangées : oui ; notes : 0", out.getvalue())
         self.assertEqual(source.read_bytes(), original)
+
+    def test_v3_copy_with_doses_keeps_its_history(self):
+        from services.store.tests.test_store import V3_SCHEMA
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        source = Path(tmp.name) / "glucofi.db"
+        db = sqlite3.connect(source)
+        db.executescript(V3_SCHEMA)
+        db.close()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(["--db", str(source), "--out", str(Path(tmp.name) / "rapport")])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("Doses validées : 1, inchangées : oui", out.getvalue())
 
     def test_reimport_fills_markers_without_duplicates(self):
         tmp = tempfile.TemporaryDirectory()

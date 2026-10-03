@@ -6,16 +6,31 @@ import json
 import logging
 import os
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time
 from pathlib import Path
 from typing import Iterable
 
-from contracts import PROTOCOL_FIELDS, ClockAction, DoseChange, DoseRule, DosingSettings, Meal, MeterClock, MeterInfo, Reading, SegmentCount, local_epoch
+from contracts import (
+    NOTE_MAX_CHARS,
+    PROTOCOL_FIELDS,
+    ClockAction,
+    DoseChange,
+    DoseRule,
+    DosingSettings,
+    Meal,
+    MeterClock,
+    MeterInfo,
+    NoteTag,
+    Reading,
+    ReadingNote,
+    SegmentCount,
+    local_epoch,
+)
 
 log = logging.getLogger("glucofi.store")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 READINGS_TABLE = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -42,7 +57,17 @@ CREATE TABLE IF NOT EXISTS dose_changes (
     rule TEXT NOT NULL,
     evidence TEXT NOT NULL,
     note TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    excluded TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS reading_notes (
+    device_time TEXT NOT NULL,
+    mg_dl INTEGER NOT NULL,
+    tags TEXT NOT NULL,
+    text TEXT NOT NULL,
+    exclude_from_dosing INTEGER NOT NULL CHECK (exclude_from_dosing IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (device_time, mg_dl)
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -85,6 +110,22 @@ V3_COLUMNS = {
         "markers_added INTEGER NOT NULL DEFAULT 0",
     ),
 }
+# v4 : table reading_notes (créée par SCHEMA) et mesures écartées de chaque dose validée
+V4_COLUMNS = {"dose_changes": ("excluded TEXT NOT NULL DEFAULT '[]'",)}
+
+
+def _note(tags: str, text: str, exclude: int) -> ReadingNote:
+    """Note relue de la base ; une étiquette inconnue (version plus récente de Glucofi) est ignorée.
+
+    Une note devenue invalide (motif perdu avec l'étiquette inconnue) n'écarte plus la mesure.
+    """
+    known = {tag.value for tag in NoteTag}
+    chosen = tuple(NoteTag(t) for t in json.loads(tags) if t in known)
+    try:
+        return ReadingNote(chosen, text, bool(exclude))
+    except ValueError:
+        log.warning("note invalide relue de la base, mesure non écartée : %s %r", tags, text[:40])
+        return ReadingNote(chosen, text[:NOTE_MAX_CHARS], False)
 
 
 def default_data_dir() -> Path:
@@ -139,11 +180,13 @@ class Store:
             backup = self._backup(version)
             if version < 2:
                 self.migrations.append(self._migrate_to_v2(backup))
-            self.migrations.append(self._migrate_to_v3(backup))
+            if version < 3:
+                self.migrations.append(self._migrate_to_v3(backup))
+            self.migrations.append(self._migrate_to_v4(backup))
 
     @property
     def last_migration(self) -> "Migration | None":
-        """Première étape de la dernière ouverture (v1 -> v2 ou v2 -> v3), None si la base était à jour."""
+        """Première étape de la dernière ouverture (v1 -> v2, v2 -> v3...), None si la base était à jour."""
         return self.migrations[0] if self.migrations else None
 
     def _backup(self, version: int) -> Path | None:
@@ -203,15 +246,31 @@ class Store:
         """
         with self.db:
             before = self._count()
-            for table, columns in V3_COLUMNS.items():
-                existing = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
-                for column in columns:
-                    if column.split()[0] not in existing:
-                        self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+            self._add_columns(V3_COLUMNS)
             self.db.execute("UPDATE settings SET value = '3' WHERE key = 'schema_version'")
             after = self._count()
         log.info("base migrée v2 -> v3 : %s mesures, sauvegarde %s", after, backup)
         return Migration(2, 3, before, after, 0, backup)
+
+    def _migrate_to_v4(self, backup: Path | None) -> "Migration":
+        """v3 -> v4 : notes sur les mesures (table reading_notes) et mesures écartées de chaque dose validée.
+
+        Aucune ligne modifiée : les doses déjà validées n'avaient aucune mesure écartée.
+        """
+        with self.db:
+            before = self._count()
+            self._add_columns(V4_COLUMNS)
+            self.db.execute("UPDATE settings SET value = '4' WHERE key = 'schema_version'")
+            after = self._count()
+        log.info("base migrée v3 -> v4 : %s mesures, sauvegarde %s", after, backup)
+        return Migration(3, 4, before, after, 0, backup)
+
+    def _add_columns(self, tables: dict[str, tuple[str, ...]]) -> None:
+        for table, columns in tables.items():
+            existing = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+            for column in columns:
+                if column.split()[0] not in existing:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
 
     @classmethod
     def open_default(cls) -> "Store":
@@ -314,15 +373,19 @@ class Store:
         return self._count()
 
     def readings(self, since: datetime | None = None, until: datetime | None = None) -> list[Reading]:
-        query = "SELECT device_time, mg_dl, epoch, device_id, meal, meter_serial FROM readings WHERE 1=1"
+        """Mesures avec leur marqueur et leur note (Reading.note)."""
+        query = (
+            "SELECT r.device_time, r.mg_dl, r.epoch, r.device_id, r.meal, r.meter_serial, n.tags, n.text, n.exclude_from_dosing"
+            " FROM readings r LEFT JOIN reading_notes n ON n.device_time = r.device_time AND n.mg_dl = r.mg_dl WHERE 1=1"
+        )
         args: list[str] = []
         if since is not None:
-            query += " AND device_time >= ?"
+            query += " AND r.device_time >= ?"
             args.append(since.isoformat())
         if until is not None:
-            query += " AND device_time < ?"
+            query += " AND r.device_time < ?"
             args.append(until.isoformat())
-        query += " ORDER BY device_time, epoch"
+        query += " ORDER BY r.device_time, r.epoch"
         return [
             Reading(
                 device_time=datetime.fromisoformat(t),
@@ -331,9 +394,42 @@ class Store:
                 device_id=dev_id,
                 meal=Meal(meal) if meal is not None else None,
                 meter_serial=serial,
+                note=None if tags is None else _note(tags, text, exclude),
             )
-            for t, mg, epoch, dev_id, meal, serial in self.db.execute(query, args)
+            for t, mg, epoch, dev_id, meal, serial, tags, text, exclude in self.db.execute(query, args)
         ]
+
+    # Notes
+
+    def set_note(self, reading: Reading, note: ReadingNote | None) -> None:
+        """Note de la mesure (device_time, mg_dl) ; une note vide ou None l'efface.
+
+        Les notes vivent à côté des mesures : un import du lecteur ne les touche jamais.
+        """
+        key = (reading.device_time.isoformat(), reading.mg_dl)
+        with self.db:
+            known = self.db.execute("SELECT 1 FROM readings WHERE device_time = ? AND mg_dl = ?", key).fetchone()
+            if not known:
+                raise ValueError(f"mesure inconnue : {reading.device_time:%d/%m/%Y %H:%M}, {reading.mg_dl} mg/dL")
+            if note is None or note.empty:
+                self.db.execute("DELETE FROM reading_notes WHERE device_time = ? AND mg_dl = ?", key)
+                return
+            self.db.execute(
+                "INSERT INTO reading_notes (device_time, mg_dl, tags, text, exclude_from_dosing, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT (device_time, mg_dl) DO UPDATE SET tags = excluded.tags, text = excluded.text,"
+                " exclude_from_dosing = excluded.exclude_from_dosing, updated_at = excluded.updated_at",
+                (
+                    *key,
+                    json.dumps([tag.value for tag in note.tags]),
+                    note.text,
+                    int(note.exclude_from_dosing),
+                    datetime.now().replace(microsecond=0).isoformat(),
+                ),
+            )
+
+    def count_notes(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM reading_notes").fetchone()[0]
 
     def last_import(self) -> ImportSummary | None:
         row = self.db.execute(
@@ -354,8 +450,8 @@ class Store:
             raise ValueError("une dose ne peut pas être négative")
         with self.db:
             cursor = self.db.execute(
-                "INSERT INTO dose_changes (effective, morning_ui, evening_ui, rule, evidence, note, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO dose_changes (effective, morning_ui, evening_ui, rule, evidence, note, created_at, excluded)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     change.effective.isoformat(),
                     change.morning_ui,
@@ -364,16 +460,14 @@ class Store:
                     json.dumps(list(change.evidence), ensure_ascii=False),
                     change.note,
                     datetime.now().replace(microsecond=0).isoformat(),
+                    json.dumps(list(change.excluded), ensure_ascii=False),
                 ),
             )
-        return DoseChange(
-            change.effective, change.morning_ui, change.evening_ui, change.rule, change.evidence, change.note,
-            cursor.lastrowid,
-        )
+        return replace(change, id=cursor.lastrowid)
 
     def dose_changes(self) -> list[DoseChange]:
         rows = self.db.execute(
-            "SELECT id, effective, morning_ui, evening_ui, rule, evidence, note FROM dose_changes"
+            "SELECT id, effective, morning_ui, evening_ui, rule, evidence, note, excluded FROM dose_changes"
             " ORDER BY effective, id"
         )
         return [
@@ -385,8 +479,9 @@ class Store:
                 evidence=tuple(json.loads(evidence)),
                 note=note,
                 id=row_id,
+                excluded=tuple(json.loads(excluded)),
             )
-            for row_id, effective, morning, evening, rule, evidence, note in rows
+            for row_id, effective, morning, evening, rule, evidence, note, excluded in rows
         ]
 
     def current_dose(self) -> DoseChange | None:

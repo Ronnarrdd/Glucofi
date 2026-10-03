@@ -21,7 +21,7 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from app.main import APP_ID, install_style  # noqa: E402
 from app.state import AppState  # noqa: E402
-from contracts import DosingSettings, Reading  # noqa: E402
+from contracts import DosingSettings, Meal, NoteTag, Reading, ReadingNote  # noqa: E402
 from services.store import Store  # noqa: E402
 
 # protocole fictif pour les captures, pas une recommandation
@@ -56,6 +56,19 @@ def _high_mornings_until_today() -> list[Reading]:
     return out
 
 
+def _add_demo_notes(state: AppState) -> None:
+    """Notes fictives sur les mesures les plus récentes : une glycémie du matin écartée, deux notes simples."""
+    readings = list(reversed(state.readings()))
+    mornings = [r for r in readings if r.meal is Meal.FASTING and r.mg_dl >= 80]
+    others = [r for r in readings if r.meal is Meal.AFTER_MEAL]
+    if mornings:
+        state.set_note(mornings[0], ReadingNote((NoteTag.LARGE_MEAL,), "repas de famille la veille", exclude_from_dosing=True))
+    if others:
+        state.set_note(others[0], ReadingNote((NoteTag.EXERCISE,), "marche de 40 min"))
+    if len(mornings) > 2:
+        state.set_note(mornings[2], ReadingNote((NoteTag.SIDE_EFFECT,), "nausées après l'injection"))
+
+
 def main() -> int:
     export, out_dir = Path(sys.argv[1]), Path(sys.argv[2])
     scenario = sys.argv[3] if len(sys.argv) > 3 else "default"
@@ -67,6 +80,7 @@ def main() -> int:
     start = (last.replace(day=1) - timedelta(days=1)).replace(day=1, hour=0, minute=0)
     if scenario != "onboarding":
         state.start_protocol("Démo", start, 10, 6, DEMO_PROTOCOL)
+        _add_demo_notes(state)
     if scenario == "proposal":
         state.store.import_readings(_high_mornings_until_today(), "démo")
     if scenario == "default":

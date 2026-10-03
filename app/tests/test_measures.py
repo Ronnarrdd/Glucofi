@@ -2,6 +2,7 @@
 
 import unittest
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from app.measures import (
     measure_view,
     range_spans,
 )
-from contracts import MG_DL_HIGH, MG_DL_LOW, DosingSettings, Meal, MeterInfo, Reading
+from contracts import MG_DL_HIGH, MG_DL_LOW, DosingSettings, Meal, MeterInfo, NoteTag, Reading, ReadingNote
 from services.charts import compute_stats
 from services.dosing import fmt_g_l
 
@@ -229,6 +230,28 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(result.days, ())
         self.assertEqual(result.summary.tiles[0].value, "-")
         self.assertEqual([s.span for s in result.summary.segments], [0, 0, 0])
+
+
+class NoteLineTest(unittest.TestCase):
+    def test_note_text_and_exclusion_on_the_line(self):
+        excluded = replace(reading("2026-09-01T07:00", 200, Meal.FASTING), note=ReadingNote((NoteTag.ILLNESS,), "fièvre", True))
+        kept = reading("2026-09-01T09:00", 130, Meal.BEFORE_MEAL)
+        lines = {line.time: line for line in view([excluded, kept]).lines}
+        self.assertEqual((lines["07:00"].note, lines["07:00"].excluded, lines["07:00"].retained), ("Malade · fièvre", True, False))
+        self.assertEqual((lines["09:00"].note, lines["09:00"].excluded, lines["09:00"].retained), (None, False, True))
+        self.assertIs(lines["07:00"].reading, excluded)
+        self.assertEqual(lines["07:00"].note_tooltip, "Modifier la note")
+        self.assertTrue(lines["09:00"].note_tooltip.startswith("Ajouter une note"))
+        self.assertEqual(view([excluded, kept]).days[0].morning.value, "1,30 g/L")
+
+    def test_low_reading_marked_to_exclude_is_retained_and_flagged(self):
+        low = replace(reading("2026-09-01T07:00", 60, Meal.FASTING), note=ReadingNote((NoteTag.DOUBTFUL,), exclude_from_dosing=True))
+        line = view([low]).lines[0]
+        self.assertEqual((line.retained, line.excluded, line.exclusion_refused), (True, False, True))
+
+    def test_note_without_text_or_tags_shows_nothing(self):
+        line = view([replace(reading("2026-09-01T07:00", 120), note=ReadingNote())]).lines[0]
+        self.assertIsNone(line.note)
 
 
 if __name__ == "__main__":

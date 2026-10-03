@@ -7,9 +7,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from contracts import ClockAction, DoseChange, DoseProposal, DoseRule, DosingSettings, MeterInfo, Reading
+from contracts import ClockAction, DoseChange, DoseProposal, DoseRule, DosingSettings, MeterInfo, Reading, ReadingNote
 from services.device import FetchResult, fmt_offset, parse_file
-from services.dosing import apply_proposal, propose
+from services.dosing import apply_proposal, can_exclude, fmt_g_l, is_morning_candidate, propose
 from services.store import ImportSummary, Store
 
 log = logging.getLogger("glucofi.state")
@@ -66,6 +66,24 @@ def morning_rule_text(settings: DosingSettings) -> str:
         f"Entre {settings.morning_start:%H:%M} et {settings.morning_end:%H:%M} : première mesure « à jeun », "
         "sinon première mesure « avant repas » ou sans marqueur. "
         "Les mesures « après repas », « coucher » et « autre moment » ne comptent pas."
+    )
+
+
+def exclusion_option(reading: Reading, settings: DosingSettings) -> tuple[bool, str]:
+    """Peut-on écarter cette mesure de l'ajustement, et l'explication à afficher sous l'interrupteur."""
+    if not is_morning_candidate(reading, settings):
+        return False, (
+            "Cette mesure n'est pas une glycémie du matin possible (heure ou marqueur) : "
+            "elle ne sert pas à l'ajustement de la dose."
+        )
+    if not can_exclude(reading, settings):
+        return False, (
+            f"Sous le seuil bas ({fmt_g_l(round(settings.low_g_l * 100))}) : une glycémie basse compte toujours. "
+            "Si elle vous semble fausse, ne validez pas la baisse proposée."
+        )
+    return True, (
+        "La mesure ne compte plus comme glycémie du matin : la suivante de la plage la remplace, "
+        "sinon le jour n'a pas de glycémie du matin et la série de jours hauts repart de zéro."
     )
 
 
@@ -222,6 +240,17 @@ class AppState:
         )
         log.info("dose modifiée manuellement : matin %s UI, soir %s UI (%s)", morning_ui, evening_ui, note)
         return change
+
+    def set_note(self, reading: Reading, note: ReadingNote | None) -> None:
+        self.store.set_note(reading, note)
+        if note is None or note.empty:
+            log.info("note effacée : mesure du %s, %s mg/dL", reading.device_time, reading.mg_dl)
+            return
+        log.info(
+            "note : mesure du %s, %s mg/dL, étiquettes %s, %s caractères de texte, %s",
+            reading.device_time, reading.mg_dl, [tag.value for tag in note.tags], len(note.text),
+            "écartée de l'ajustement" if note.exclude_from_dosing else "comptée pour l'ajustement",
+        )
 
     def import_fetch(self, result: FetchResult) -> ImportSummary:
         for reason in result.rejected:

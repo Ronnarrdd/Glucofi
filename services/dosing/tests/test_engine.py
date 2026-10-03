@@ -2,8 +2,19 @@ import unittest
 from dataclasses import replace
 from datetime import date, datetime, time
 
-from contracts import AlertLevel, DoseChange, DoseRule, DosingSettings, Meal, Reading
-from services.dosing import apply_proposal, fmt_g_l, fmt_mg_dl, morning_readings, propose
+from contracts import AlertLevel, DoseChange, DoseRule, DosingSettings, Meal, NoteTag, Reading, ReadingNote
+from services.dosing import (
+    apply_proposal,
+    can_exclude,
+    excluded_from_dosing,
+    exclusion_refused,
+    fmt_excluded,
+    fmt_g_l,
+    fmt_mg_dl,
+    fmt_reading,
+    morning_readings,
+    propose,
+)
 
 SETTINGS = DosingSettings(insulin="Insuline test", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3)
 START = DoseChange(datetime(2026, 9, 1, 12, 0), 10, 6, DoseRule.START)
@@ -253,6 +264,120 @@ class OffScaleReadingsTest(unittest.TestCase):
         p = run(mornings([601, 601, 601]))
         self.assertEqual(p.rule, DoseRule.INCREASE_HIGH_MORNINGS)
         self.assertIn("hyper", [a.code for a in p.alerts])
+
+
+def noted(reading: Reading, *tags: NoteTag, text: str = "", exclude: bool = True) -> Reading:
+    return replace(reading, note=ReadingNote(tags or (NoteTag.LARGE_MEAL,), text, exclude))
+
+
+class ExclusionTest(unittest.TestCase):
+    """Note « écarter de l'ajustement » : la mesure est traitée comme absente, sauf sous le seuil bas."""
+
+    def test_excluded_high_morning_breaks_the_streak(self):
+        """Repas copieux la veille : le 2e matin haut est écarté, il ne reste que 2 jours consécutifs."""
+        readings = mornings([180, 190, 200])
+        readings[1] = noted(readings[1])
+        p = run(readings)
+        self.assertEqual(p.rule, DoseRule.KEEP)
+        self.assertEqual([m.day.day for m in p.mornings], [2, 4])
+        self.assertEqual(p.excluded, (readings[1],))
+        self.assertEqual(run([replace(x, note=None) for x in readings]).rule, DoseRule.INCREASE_HIGH_MORNINGS)
+
+    def test_next_reading_of_the_window_replaces_the_excluded_one(self):
+        readings = [noted(r("2026-09-02 07:00", 210, Meal.FASTING)), r("2026-09-02 10:30", 130, Meal.BEFORE_MEAL)]
+        self.assertEqual([m.reading.mg_dl for m in morning_readings(readings, SETTINGS)], [130])
+        readings = [noted(r("2026-09-02 07:00", 210, Meal.FASTING)), r("2026-09-02 09:00", 140, Meal.FASTING)]
+        self.assertEqual([m.reading.mg_dl for m in morning_readings(readings, SETTINGS)], [140])
+
+    def test_low_morning_is_never_excluded(self):
+        """Une note ne peut pas masquer une baisse de dose : la glycémie basse compte, avec une alerte qui le dit."""
+        for mg in (79, 60, 9):
+            with self.subTest(mg=mg):
+                p = run([noted(r("2026-09-02 08:00", mg), NoteTag.DOUBTFUL)])
+                self.assertEqual(p.rule, DoseRule.DECREASE_LOW_MORNING)
+                self.assertEqual(p.excluded, ())
+                refused = [a for a in p.alerts if a.code == "exclusion_refused"]
+                self.assertEqual([a.level for a in refused], [AlertLevel.WARNING])
+                self.assertNotIn("excluded", [a.code for a in p.alerts])
+
+    def test_exactly_the_low_threshold_can_be_excluded(self):
+        self.assertTrue(can_exclude(r("2026-09-02 08:00", 80), SETTINGS))
+        self.assertFalse(can_exclude(r("2026-09-02 08:00", 79), SETTINGS))
+        p = run([noted(r("2026-09-02 08:00", 80))])
+        self.assertEqual((p.rule, p.mornings), (DoseRule.KEEP, ()))
+
+    def test_flag_without_effect_outside_morning_candidates(self):
+        """Mesure de midi ou « après repas » marquée à écarter : elle ne comptait déjà pas, aucune alerte."""
+        for reading in (r("2026-09-02 14:00", 250), r("2026-09-02 08:00", 250, Meal.AFTER_MEAL)):
+            with self.subTest(reading=reading):
+                note_reading = noted(reading)
+                self.assertFalse(excluded_from_dosing(note_reading, SETTINGS))
+                self.assertFalse(exclusion_refused(noted(replace(reading, mg_dl=50)), SETTINGS))
+                p = run(mornings([120]) + [note_reading], today=date(2026, 9, 2))
+                self.assertEqual(p.excluded, ())
+                self.assertFalse([a for a in p.alerts if a.code.startswith("exclu")])
+
+    def test_note_without_exclusion_changes_nothing(self):
+        readings = [noted(x, NoteTag.ILLNESS, exclude=False) for x in mornings([180, 190, 200])]
+        p = run(readings)
+        self.assertEqual((p.rule, p.excluded), (DoseRule.INCREASE_HIGH_MORNINGS, ()))
+
+    def test_hyper_alert_still_sees_excluded_readings(self):
+        p = run(mornings([120]) + [noted(r("2026-09-03 08:00", 320))], today=date(2026, 9, 3))
+        self.assertIn("hyper", [a.code for a in p.alerts])
+        self.assertEqual([m.reading.mg_dl for m in p.mornings], [120])
+
+    def test_excluded_latest_morning_can_make_data_stale(self):
+        readings = mornings([120]) + [noted(r("2026-09-05 08:00", 200))]
+        p = run(readings, today=date(2026, 9, 5))
+        self.assertIn("stale", [a.code for a in p.alerts])
+
+    def test_exclusions_before_current_dose_are_not_reported(self):
+        change = DoseChange(datetime(2026, 9, 3, 20), 10, 8, DoseRule.INCREASE_HIGH_MORNINGS)
+        readings = [noted(r("2026-09-02 08:00", 200))] + mornings([120], first_day=4)
+        p = run(readings, changes=[START, change])
+        self.assertEqual(p.excluded, ())
+
+    def test_excluded_alert_and_validated_change_keep_the_motive(self):
+        readings = mornings([180, 185, 190, 195])
+        readings[0] = noted(readings[0], NoteTag.ILLNESS, text="fièvre")
+        p = run(readings, today=date(2026, 9, 5))
+        self.assertEqual(p.rule, DoseRule.INCREASE_HIGH_MORNINGS)
+        info = [a for a in p.alerts if a.code == "excluded"]
+        self.assertEqual(info[0].level, AlertLevel.INFO)
+        self.assertIn("02/09/2026 08:00 : 1,80 g/L (Malade · fièvre)", info[0].message)
+        change = apply_proposal(p, now=datetime(2026, 9, 5, 20))
+        self.assertEqual(change.excluded, ("02/09/2026 08:00 : 1,80 g/L (Malade · fièvre)",))
+        self.assertEqual(change.evidence, tuple(fmt_reading(x) for x in readings[1:]))
+        self.assertEqual(fmt_excluded(readings[1]), fmt_reading(readings[1]))
+
+
+class ReadingNoteContractTest(unittest.TestCase):
+    def test_tags_are_deduplicated_in_a_fixed_order(self):
+        note = ReadingNote((NoteTag.DOUBTFUL, "large_meal", NoteTag.DOUBTFUL), "  texte  ")
+        self.assertEqual(note.tags, (NoteTag.LARGE_MEAL, NoteTag.DOUBTFUL))
+        self.assertEqual(note.text, "texte")
+        self.assertEqual(note.summary, "Repas copieux, Mesure douteuse · texte")
+
+    def test_exclusion_needs_a_motive(self):
+        with self.assertRaises(ValueError):
+            ReadingNote(text="   ", exclude_from_dosing=True)
+        self.assertTrue(ReadingNote(text="fièvre", exclude_from_dosing=True).exclude_from_dosing)
+
+    def test_text_length_is_bounded(self):
+        ReadingNote(text="x" * 500)
+        with self.assertRaises(ValueError):
+            ReadingNote(text="x" * 501)
+
+    def test_empty(self):
+        self.assertTrue(ReadingNote().empty)
+        self.assertFalse(ReadingNote(text="a").empty)
+        self.assertEqual(ReadingNote().summary, "")
+
+    def test_note_does_not_change_reading_identity(self):
+        plain = r("2026-09-02 08:00", 120)
+        self.assertEqual(noted(plain), plain)
+        self.assertEqual(hash(noted(plain)), hash(plain))
 
 
 if __name__ == "__main__":

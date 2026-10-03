@@ -12,10 +12,14 @@ app/measures.py :
 - barre de répartition : 100 parts, une part au moins par niveau présent, à
   1 part près du pourcentage exact, plus 1 par niveau relevé (moins de 1 % :
   exactement 1 part) ;
-- chaque icône de marqueur existe (fichier de app/icons ou icône Adwaita).
+- chaque icône de marqueur existe (fichier de app/icons ou icône Adwaita) ;
+- notes : chaque ligne montre le texte de sa note ; « écartée » si et seulement
+  si glycémie du matin possible marquée à écarter et pas sous le seuil bas
+  (jamais retenue) ; « comptée » si marquée à écarter mais sous le seuil bas.
 
 Sources : un export accuchek réel (--json) et/ou N patients synthétiques
-(--synthetic) dont les marqueurs sont tirés parmi tous ceux du lecteur.
+(--synthetic) dont les marqueurs sont tirés parmi tous ceux du lecteur, avec
+des notes (replay_history.with_notes).
 Seuil de réussite : 100 %. Échecs détaillés dans /tmp/glucofi-eval/measures_view.csv.
 
 Usage :
@@ -33,7 +37,7 @@ from pathlib import Path
 
 from app.measures import LEVEL_ICONS, MARKER_ICONS, MEAL_FILTERS, measure_view
 from contracts import DosingSettings, Meal, Reading
-from evals.replay_history import synthetic_patient
+from evals.replay_history import oracle_in_morning, oracle_set_aside, synthetic_patient, with_notes
 from services.charts import PERIODS
 from services.device import parse_file
 from services.dosing import morning_readings
@@ -61,10 +65,10 @@ def all_markers_patient(seed: int, days: int = 60) -> list[Reading]:
     """Patient synthétique de replay_history, marqueurs retirés au hasard parmi tous ceux du lecteur."""
     rng = random.Random(seed * 7919)
     choices = list(Meal) + [None]
-    return [
+    return with_notes([
         Reading(r.device_time, r.mg_dl, r.epoch, meal=rng.choice(choices) if rng.random() < 0.6 else r.meal)
         for r in synthetic_patient(seed, days=days)
-    ]
+    ], seed)
 
 
 def window(readings: list[Reading], days: int | None, today: date) -> list[Reading]:
@@ -109,6 +113,14 @@ def check(source: str, readings: list[Reading], s: DosingSettings = SETTINGS) ->
                         fail(filters, f"niveau {line.level} pour {r.mg_dl} mg/dL (attendu {level})")
                     if line.retained != (engine.get(r.day) == r and engine[r.day].meal == r.meal):
                         fail(filters, f"retenue incorrecte : {r.device_time} {r.mg_dl}")
+                    asked = r.note is not None and r.note.exclude_from_dosing and oracle_in_morning(r, s)
+                    if line.excluded != (asked and oracle_set_aside(r, s)) or (line.excluded and line.retained):
+                        fail(filters, f"écartée incorrecte : {r.device_time} {r.mg_dl}")
+                    if line.exclusion_refused != (asked and not oracle_set_aside(r, s)):
+                        fail(filters, f"« comptée » incorrecte : {r.device_time} {r.mg_dl}")
+                    shown_note = r.note.summary if r.note is not None and r.note.summary else None
+                    if line.note != shown_note:
+                        fail(filters, f"note {line.note!r} au lieu de {shown_note!r} : {r.device_time}")
                 days_seen = [d.day for d in view.days]
                 if days_seen != sorted(set(days_seen), reverse=True):
                     fail(filters, "jours en double ou mal classés")

@@ -24,10 +24,20 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from contracts import MEAL_LABELS_FR, RULE_LABELS_FR, AlertLevel, DoseChange, DoseProposal, DosingSettings, Reading
+from contracts import (
+    MEAL_LABELS_FR,
+    NOTE_TAG_LABELS_FR,
+    RULE_LABELS_FR,
+    AlertLevel,
+    DoseChange,
+    DoseProposal,
+    DosingSettings,
+    NoteTag,
+    Reading,
+)
 from services.charts import PERIODS, Stats, compute_stats, period_of, stats_by_period
 from services.charts.figures import distribution_figure, figure_png, morning_trend_figure, timeline_figure
-from services.dosing import fmt_g_l, fmt_mg_dl, morning_readings
+from services.dosing import excluded_from_dosing, exclusion_refused, fmt_g_l, fmt_mg_dl, morning_readings
 
 DISCLAIMER = (
     "Document généré par Glucofi à partir des mesures du lecteur Accu-Chek Guide. "
@@ -41,6 +51,11 @@ ROW_ALT = colors.HexColor("#f2f6fc")
 LOW_BG = colors.HexColor("#fbd5d7")
 HIGH_BG = colors.HexColor("#ffe3c7")
 DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
+MORNING_LEGEND = (
+    "Matin : « retenue » = glycémie du matin utilisée pour l'ajustement de la dose ; « écartée » = retirée de "
+    "l'ajustement par une note du patient ; « comptée » = marquée à écarter mais sous le seuil bas, donc utilisée "
+    "quand même (une glycémie basse n'est jamais écartée)."
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +122,36 @@ def _stats_rows(overall: Stats, by_period: dict[str, Stats]) -> list[list[str]]:
     return rows
 
 
+def morning_status(reading: Reading, retained: set[Reading], settings: DosingSettings) -> str:
+    """Colonne « Matin » : retenue pour l'ajustement, écartée par une note, ou comptée malgré la note (sous le seuil bas)."""
+    if reading in retained:
+        return "comptée" if exclusion_refused(reading, settings) else "retenue"
+    if excluded_from_dosing(reading, settings):
+        return "écartée"
+    return ""
+
+
+def notes_summary(readings: Sequence[Reading], settings: DosingSettings) -> str:
+    """« 5 mesures avec une note : Repas copieux 3, Malade 1, texte libre 2. 2 glycémies du matin écartées de l'ajustement. »"""
+    noted = [r for r in readings if r.note is not None and not r.note.empty]
+    if not noted:
+        return ""
+    counts = [(NOTE_TAG_LABELS_FR[tag], sum(tag in r.note.tags for r in noted)) for tag in NoteTag]
+    counts.append(("texte libre", sum(bool(r.note.text) for r in noted)))
+    text = f"{len(noted)} mesure(s) avec une note : " + ", ".join(f"{name} {n}" for name, n in counts if n) + "."
+    excluded = sum(excluded_from_dosing(r, settings) for r in noted)
+    if excluded:
+        text += f" {excluded} glycémie(s) du matin écartée(s) de l'ajustement de la dose."
+    return text
+
+
+def _dose_details(change: DoseChange) -> str:
+    details = "<br/>".join(map(escape, change.evidence)) or escape(change.note or "-")
+    if change.excluded:
+        details += "<br/><i>Écartées :</i><br/>" + "<br/>".join(map(escape, change.excluded))
+    return details
+
+
 def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
     path = Path(path)
     st = _styles()
@@ -171,7 +216,7 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
             rows.append([
                 f"{c.effective:%d/%m/%Y %H:%M}", f"{c.morning_ui} UI", f"{c.evening_ui} UI",
                 Paragraph(RULE_LABELS_FR[c.rule], st["small"]),
-                Paragraph("<br/>".join(map(escape, c.evidence)) or escape(c.note or "-"), st["small"]),
+                Paragraph(_dose_details(c), st["small"]),
             ])
         story.append(_table(rows, [2.8 * cm, 1.5 * cm, 1.5 * cm, 5 * cm, 7.2 * cm]))
     else:
@@ -180,21 +225,28 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
     story.append(PageBreak())
     story.append(Paragraph("Détail des mesures", st["h2"]))
     if period:
+        notes = notes_summary(period, settings)
+        if notes:
+            story.append(Paragraph(escape(notes), st["body"]))
+            story.append(Spacer(1, 6))
         morning_keys = {m.reading for m in morning_readings(period, settings)}
         low, high = round(settings.low_g_l * 100), round(settings.high_g_l * 100)
-        rows = [["Date", "Heure", "Glycémie", "mg/dL", "Moment", "Marqueur", "Matin retenu"]]
+        rows = [["Date", "Heure", "Glycémie", "mg/dL", "Moment", "Marqueur", "Matin", "Note"]]
         extra = []
         for i, r in enumerate(sorted(period, reverse=True), start=1):
             rows.append([
                 f"{DAYS_FR[r.device_time.weekday()]} {r.device_time:%d/%m/%Y}", f"{r.device_time:%H:%M}", fmt_g_l(r.mg_dl), fmt_mg_dl(r.mg_dl),
                 period_of(r, settings), MEAL_LABELS_FR[r.meal] if r.meal is not None else "",
-                "oui" if r in morning_keys else "",
+                morning_status(r, morning_keys, settings),
+                Paragraph(escape(r.note.summary), st["small"]) if r.note is not None and r.note.summary else "",
             ])
             if r.mg_dl < low:
                 extra.append(("BACKGROUND", (2, i), (3, i), LOW_BG))
             elif r.mg_dl > high:
                 extra.append(("BACKGROUND", (2, i), (3, i), HIGH_BG))
-        story.append(_table(rows, [3.2 * cm, 1.4 * cm, 2.4 * cm, 1.9 * cm, 2.4 * cm, 2.4 * cm, 2.3 * cm], extra))
+        widths = [2.6 * cm, 1.1 * cm, 2.3 * cm, 1.8 * cm, 1.9 * cm, 2.4 * cm, 1.5 * cm, 4.4 * cm]
+        story.append(_table(rows, widths, extra + [("ALIGN", (7, 1), (7, -1), "LEFT")]))
+        story.append(Paragraph(MORNING_LEGEND, st["small"]))
     else:
         story.append(Paragraph("Aucune mesure sur la période.", st["body"]))
 

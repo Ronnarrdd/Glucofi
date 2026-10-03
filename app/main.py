@@ -42,7 +42,13 @@ CSS = """
 .marker-badge { min-width: 34px; min-height: 34px; border-radius: 999px; background-color: alpha(currentColor, 0.08); }
 .marker-badge.marker-fasting { background-color: alpha(currentColor, 0.14); }
 .marker-badge.marker-none { opacity: 0.55; }
-.morning-chip, .retained-chip { padding: 3px 10px; border-radius: 999px; background-color: alpha(currentColor, 0.08); }
+.morning-chip, .retained-chip, .excluded-chip, .refused-chip { padding: 3px 10px; border-radius: 999px; background-color: alpha(currentColor, 0.08); }
+.excluded-chip { opacity: 0.75; }
+.refused-chip { color: var(--warning-color); background-color: color-mix(in srgb, var(--warning-bg-color) 20%, transparent); }
+.note-button { opacity: 0.45; }
+.note-button.has-note { opacity: 1; color: var(--accent-color); }
+.note-tag { border-radius: 999px; padding: 4px 12px; }
+.note-tag:checked { background-color: var(--accent-bg-color); color: var(--accent-fg-color); }
 .value-pill { padding: 4px 12px; border-radius: 999px; font-weight: 700; font-size: 15px; }
 .value-pill.level-low { color: var(--error-color); background-color: color-mix(in srgb, var(--error-bg-color) 16%, transparent); }
 .value-pill.level-in { color: var(--success-color); background-color: color-mix(in srgb, var(--success-bg-color) 16%, transparent); }

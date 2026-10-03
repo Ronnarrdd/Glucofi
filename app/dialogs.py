@@ -1,4 +1,4 @@
-"""Boîtes de dialogue : premier lancement, préférences, modification manuelle de la dose."""
+"""Boîtes de dialogue : premier lancement, préférences, modification manuelle de la dose, note sur une mesure."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ from typing import Callable
 
 from gi.repository import Adw, Gtk
 
-from app.state import AppState, FormError, fmt_form_g_l, parse_count, protocol_from_form
+from app.measures import marker_of
+from app.state import AppState, FormError, exclusion_option, fmt_form_g_l, parse_count, protocol_from_form
+from contracts import NOTE_MAX_CHARS, NOTE_TAG_LABELS_FR, NoteTag, Reading, ReadingNote
+from services.dosing import fmt_g_l
 
 MAX_UI = 80
 
@@ -212,6 +215,96 @@ def manual_dose_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[]
         on_done()
 
     button.connect("clicked", on_click)
+    dialog.present(parent)
+
+
+class NoteForm:
+    """Formulaire d'une note : étiquettes, texte libre, interrupteur « écarter de l'ajustement »."""
+
+    def __init__(self, reading: Reading, state: AppState):
+        self.reading = reading
+        note = reading.note or ReadingNote()
+        self.page = Adw.PreferencesPage()
+
+        what = Adw.PreferencesGroup(
+            title=f"{reading.device_time:%d/%m/%Y à %H:%M} · {fmt_g_l(reading.mg_dl)}",
+            description=f"{marker_of(reading).label}. La note reste dans Glucofi : le lecteur ne la voit pas.",
+        )
+        tags = Adw.WrapBox(child_spacing=8, line_spacing=8)
+        self.tags: dict[NoteTag, Gtk.ToggleButton] = {}
+        for tag in NoteTag:
+            toggle = Gtk.ToggleButton(label=NOTE_TAG_LABELS_FR[tag], active=tag in note.tags)
+            toggle.add_css_class("note-tag")
+            toggle.connect("toggled", lambda _t: self._sync())
+            tags.append(toggle)
+            self.tags[tag] = toggle
+        what.add(tags)
+        self.page.add(what)
+
+        free = Adw.PreferencesGroup()
+        self.text = Adw.EntryRow(title="Texte libre (facultatif)", max_length=NOTE_MAX_CHARS)
+        self.text.set_text(note.text)
+        self.text.connect("changed", lambda _r: self._sync())
+        free.add(self.text)
+        self.page.add(free)
+
+        dosing = Adw.PreferencesGroup(title="Ajustement de la dose")
+        self.allowed, explanation = exclusion_option(reading, state.settings)
+        self.exclude = Adw.SwitchRow(
+            title="Écarter de l'ajustement de la dose",
+            subtitle=explanation,
+            subtitle_lines=0,
+            active=self.allowed and note.exclude_from_dosing,
+            sensitive=self.allowed,
+        )
+        self.exclude.connect("notify::active", lambda *_a: self._sync())
+        dosing.add(self.exclude)
+        self.page.add(dosing)
+
+        self.error = Gtk.Label(wrap=True, visible=False, margin_start=24, margin_end=24, margin_bottom=12)
+        self.error.add_css_class("error")
+
+    def note(self) -> ReadingNote:
+        """Raises ValueError si la note est invalide (texte trop long, mesure écartée sans motif)."""
+        return ReadingNote(
+            tuple(tag for tag, toggle in self.tags.items() if toggle.get_active()),
+            self.text.get_text(),
+            self.allowed and self.exclude.get_active(),
+        )
+
+    def _sync(self) -> None:
+        self.error.set_visible(False)
+
+
+def note_dialog(parent: Gtk.Widget, state: AppState, reading: Reading, on_done: Callable[[], None]) -> None:
+    form = NoteForm(reading, state)
+    button = Gtk.Button(label="Enregistrer")
+    dialog = _dialog_shell("Note sur la mesure", form.page, button)
+    box = button.get_parent()
+    box.insert_child_after(form.error, form.page)
+
+    def save(note: ReadingNote | None) -> None:
+        state.set_note(reading, note)
+        dialog.close()
+        on_done()
+
+    def on_save(_btn):
+        try:
+            note = form.note()
+        except ValueError as exc:
+            form.error.set_label(f"{str(exc)[0].upper()}{str(exc)[1:]}.")
+            form.error.set_visible(True)
+            return
+        save(note)
+
+    button.connect("clicked", on_save)
+    if reading.note is not None:
+        delete = Gtk.Button(label="Supprimer la note", halign=Gtk.Align.CENTER, margin_bottom=24)
+        delete.add_css_class("destructive-action")
+        delete.add_css_class("flat")
+        delete.connect("clicked", lambda _b: save(None))
+        button.set_margin_bottom(8)
+        box.append(delete)
     dialog.present(parent)
 
 

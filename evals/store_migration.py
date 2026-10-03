@@ -38,6 +38,28 @@ def rows(path: Path) -> dict[int, tuple[str, int, int]]:
         db.close()
 
 
+def doses(path: Path) -> list[tuple]:
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return db.execute("SELECT id, effective, morning_ui, evening_ui, rule, evidence, note FROM dose_changes ORDER BY id").fetchall()
+    finally:
+        db.close()
+
+
+def notes_schema_problems(store: Store) -> list[str]:
+    """v4 : table reading_notes et colonne dose_changes.excluded présentes et lisibles."""
+    problems = []
+    tables = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "reading_notes" not in tables:
+        problems.append("table reading_notes absente après migration")
+    columns = {row[1] for row in store.db.execute("PRAGMA table_info(dose_changes)")}
+    if "excluded" not in columns:
+        problems.append("colonne dose_changes.excluded absente après migration")
+    elif any(change.excluded for change in store.dose_changes()):
+        problems.append("doses validées avant v4 avec des mesures écartées")
+    return problems
+
+
 def meals(path: Path) -> dict[tuple[str, int], str | None]:
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
@@ -118,13 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     copy = work / "glucofi.db"
     shutil.copy2(args.db, copy)
     before = rows(copy)
+    doses_before = doses(copy)
 
     store = Store(copy)
     migration = store.last_migration
+    problems = notes_schema_problems(store)
+    notes = store.count_notes()
     store.close()
     after = rows(copy)
+    if doses(copy) != doses_before:
+        problems.append(f"historique des doses modifié : {len(doses_before)} avant, {len(doses(copy))} après")
 
-    problems = []
     categories: Counter[str] = Counter()
     examples: dict[str, tuple] = {}
     csv_path = work / "avant-apres.csv"
@@ -160,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         t, mg, old, new = examples[category]
         print(f"| {category} | {count} | {t}, {mg}, {old} -> {new} |")
     print()
+    print(f"Doses validées : {len(doses_before)}, inchangées : {'oui' if doses(copy) == doses_before else 'NON'} ; notes : {notes}")
     if args.reimport is not None:
         problems += reimport(copy, args.reimport, work)
     for problem in problems[:20]:

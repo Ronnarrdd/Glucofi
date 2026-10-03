@@ -8,13 +8,26 @@ from app.state import (
     FormError,
     StaleProposal,
     clock_text,
+    exclusion_option,
     fmt_form_g_l,
     import_message,
     meter_text,
     morning_rule_text,
     protocol_from_form,
 )
-from contracts import ClockAction, DoseChange, DoseRule, DosingSettings, Meal, MeterClock, MeterInfo, Reading, SegmentCount
+from contracts import (
+    ClockAction,
+    DoseChange,
+    DoseRule,
+    DosingSettings,
+    Meal,
+    MeterClock,
+    MeterInfo,
+    NoteTag,
+    Reading,
+    ReadingNote,
+    SegmentCount,
+)
 from services.device import FetchResult
 from services.store import ImportSummary, Store
 
@@ -129,6 +142,47 @@ class AppStateTest(unittest.TestCase):
         )
         summary = self.state.import_file(path)
         self.assertEqual((summary.added, summary.markers_added), (1, 1))
+
+    def test_excluding_a_high_morning_cancels_the_increase_until_validated(self):
+        self.state.start_protocol("Jean", datetime(2026, 9, 1, 12), 10, 6, SETTINGS)
+        self.state.import_fetch(self.fetched(r("2026-09-03 08:00", 180), r("2026-09-04 08:00", 190), r("2026-09-05 08:00", 200)))
+        shown = self.state.proposal()
+        self.assertEqual(shown.rule, DoseRule.INCREASE_HIGH_MORNINGS)
+        big_meal = self.state.readings()[1]
+        with self.assertLogs("glucofi.state", "INFO") as logs:
+            self.state.set_note(big_meal, ReadingNote((NoteTag.LARGE_MEAL,), "anniversaire", exclude_from_dosing=True))
+        self.assertIn("écartée de l'ajustement", logs.output[0])
+        self.assertNotIn("anniversaire", logs.output[0])
+        self.assertEqual(self.state.proposal().rule, DoseRule.KEEP)
+        with self.assertRaises(StaleProposal):
+            self.state.validate(shown)
+        with self.assertLogs("glucofi.state", "INFO") as logs:
+            self.state.set_note(big_meal, None)
+        self.assertIn("note effacée", logs.output[0])
+        self.assertEqual(self.state.proposal().rule, DoseRule.INCREASE_HIGH_MORNINGS)
+
+    def test_validated_change_records_the_excluded_mornings(self):
+        self.state.start_protocol("Jean", datetime(2026, 9, 1, 12), 10, 6, SETTINGS)
+        self.state.import_fetch(self.fetched(*(r(f"2026-09-0{d} 08:00", 180 + d) for d in (2, 3, 4, 5))))
+        self.state.set_note(self.state.readings()[0], ReadingNote((NoteTag.ILLNESS,), exclude_from_dosing=True))
+        change = self.state.validate(self.state.proposal())
+        self.assertEqual(self.store.current_dose().excluded, ("02/09/2026 08:00 : 1,82 g/L (Malade)",))
+        self.assertEqual(change.excluded, self.store.current_dose().excluded)
+
+
+class ExclusionOptionTest(unittest.TestCase):
+    def test_only_morning_candidates_above_the_low_threshold(self):
+        allowed, text = exclusion_option(r("2026-09-02 08:00", 200), SETTINGS)
+        self.assertTrue(allowed)
+        self.assertIn("la suivante de la plage la remplace", text)
+        allowed, text = exclusion_option(r("2026-09-02 08:00", 79), SETTINGS)
+        self.assertFalse(allowed)
+        self.assertIn("0,80 g/L", text)
+        self.assertTrue(exclusion_option(r("2026-09-02 08:00", 80), SETTINGS)[0])
+        for reading in (r("2026-09-02 14:00", 200), Reading(datetime(2026, 9, 2, 8), 200, 0, meal=Meal.AFTER_MEAL)):
+            allowed, text = exclusion_option(reading, SETTINGS)
+            self.assertFalse(allowed)
+            self.assertIn("ne sert pas à l'ajustement", text)
 
 
 METER = MeterInfo("Roche", "925", "92500000042", "v1.9.6", "G", "", "0060190000000042")

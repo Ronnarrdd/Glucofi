@@ -14,7 +14,9 @@ from contracts import (
     Meal,
     MeterClock,
     MeterInfo,
+    NoteTag,
     Reading,
+    ReadingNote,
     SegmentCount,
     local_epoch,
 )
@@ -177,8 +179,8 @@ class MigrationV2Test(TimezoneParis, unittest.TestCase):
         migration = store.last_migration
         self.assertEqual((migration.readings_before, migration.readings_after, migration.epochs_fixed), (3, 3, 2))
         self.assertEqual([r.epoch for r in store.readings()], [1610694000, 1782970560, 1782989940])
-        self.assertEqual(store.get_setting("schema_version"), 3)
-        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(1, 2), (2, 3)])
+        self.assertEqual(store.get_setting("schema_version"), 4)
+        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(1, 2), (2, 3), (3, 4)])
         self.assertEqual(store.get_setting("patient_name"), "Test")
         backup = sqlite3.connect(migration.backup)
         self.addCleanup(backup.close)
@@ -193,10 +195,10 @@ class MigrationV2Test(TimezoneParis, unittest.TestCase):
         self.assertIsNone(store.last_migration)
         self.assertEqual(len(list(Path(self.dir.name).glob("*.bak"))), 1)
 
-    def test_new_database_starts_at_v3(self):
+    def test_new_database_starts_at_v4(self):
         store = Store(Path(self.dir.name) / "neuve.db")
         self.addCleanup(store.close)
-        self.assertEqual(store.get_setting("schema_version"), 3)
+        self.assertEqual(store.get_setting("schema_version"), 4)
         self.assertIsNone(store.last_migration)
         t = datetime(2026, 7, 2, 7, 36)
         store.import_readings([Reading(t, 120, 1782974160)], "lecteur")
@@ -300,8 +302,8 @@ class MigrationV3Test(TimezoneParis, unittest.TestCase):
     def test_v2_database_gets_marker_columns_and_keeps_rows(self):
         store = Store(self.path)
         self.addCleanup(store.close)
-        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(2, 3)])
-        self.assertEqual(store.get_setting("schema_version"), 3)
+        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(2, 3), (3, 4)])
+        self.assertEqual(store.get_setting("schema_version"), 4)
         self.assertEqual(store.readings(), [Reading(datetime(2026, 7, 2, 7, 36), 120, 1782970560, 4)])
         self.assertIsNone(store.readings()[0].meal)
         old = store.last_import()
@@ -325,6 +327,126 @@ class MigrationV3Test(TimezoneParis, unittest.TestCase):
         self.addCleanup(store.close)
         self.assertEqual(store.migrations, [])
         self.assertEqual(len(list(Path(self.dir.name).glob("glucofi.db.v2-*.bak"))), 1)
+
+
+V3_SCHEMA = V2_SCHEMA.replace("('schema_version', '2')", "('schema_version', '3')") + """
+ALTER TABLE readings ADD COLUMN meal TEXT;
+ALTER TABLE readings ADD COLUMN meter_serial TEXT;
+ALTER TABLE imports ADD COLUMN meter_serial TEXT;
+ALTER TABLE imports ADD COLUMN clock_offset_s INTEGER;
+ALTER TABLE imports ADD COLUMN clock_action TEXT;
+ALTER TABLE imports ADD COLUMN glucose_announced INTEGER;
+ALTER TABLE imports ADD COLUMN markers_added INTEGER NOT NULL DEFAULT 0;
+UPDATE readings SET meal = 'fasting';
+INSERT INTO dose_changes (effective, morning_ui, evening_ui, rule, evidence, note, created_at)
+    VALUES ('2026-07-01T00:00:00', 10, 6, 'start', '[]', '', '2026-07-01T00:00:00');
+"""
+
+
+class MigrationV4Test(TimezoneParis, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = Path(self.dir.name) / "glucofi.db"
+        db = sqlite3.connect(self.path)
+        db.executescript(V3_SCHEMA)
+        db.close()
+
+    def test_v3_database_gets_notes_and_keeps_rows(self):
+        store = Store(self.path)
+        self.addCleanup(store.close)
+        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(3, 4)])
+        self.assertEqual(store.get_setting("schema_version"), 4)
+        self.assertEqual([(r.mg_dl, r.meal, r.note) for r in store.readings()], [(120, Meal.FASTING, None)])
+        self.assertEqual([(c.evening_ui, c.excluded) for c in store.dose_changes()], [(6, ())])
+        store.set_note(store.readings()[0], ReadingNote((NoteTag.ILLNESS,)))
+        self.assertEqual(store.readings()[0].note.tags, (NoteTag.ILLNESS,))
+        backup = sqlite3.connect(store.last_migration.backup)
+        self.addCleanup(backup.close)
+        self.assertEqual(backup.execute("SELECT value FROM settings WHERE key = 'schema_version'").fetchone(), ("3",))
+
+    def test_migration_runs_once(self):
+        Store(self.path).close()
+        store = Store(self.path)
+        self.addCleanup(store.close)
+        self.assertEqual(store.migrations, [])
+
+
+class ReadingNotesTest(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+        self.store.import_readings(
+            [reading("2026-09-01T07:30", 195, Meal.FASTING), reading("2026-09-01T13:00", 180, Meal.AFTER_MEAL)],
+            "lecteur",
+        )
+        self.morning, self.noon = self.store.readings()
+
+    def test_note_roundtrip_is_attached_to_its_reading(self):
+        note = ReadingNote((NoteTag.SIDE_EFFECT, NoteTag.LARGE_MEAL), "  raclette la veille ", exclude_from_dosing=True)
+        self.store.set_note(self.morning, note)
+        got = self.store.readings()
+        self.assertEqual(got[0].note, ReadingNote((NoteTag.LARGE_MEAL, NoteTag.SIDE_EFFECT), "raclette la veille", True))
+        self.assertIsNone(got[1].note)
+        self.assertEqual(self.store.count_notes(), 1)
+
+    def test_note_is_updated_then_erased(self):
+        self.store.set_note(self.morning, ReadingNote(text="sport"))
+        self.store.set_note(self.morning, ReadingNote((NoteTag.EXERCISE,)))
+        self.assertEqual(self.store.readings()[0].note, ReadingNote((NoteTag.EXERCISE,)))
+        self.store.set_note(self.morning, ReadingNote())
+        self.assertIsNone(self.store.readings()[0].note)
+        self.store.set_note(self.morning, ReadingNote(text="x"))
+        self.store.set_note(self.morning, None)
+        self.assertEqual(self.store.count_notes(), 0)
+
+    def test_reimport_never_touches_notes(self):
+        """Le lecteur ne connaît pas les notes : relire les mêmes mesures, avec ou sans marqueur, les garde."""
+        self.store.set_note(self.morning, ReadingNote((NoteTag.ILLNESS,), exclude_from_dosing=True))
+        summary = self.store.import_readings(
+            [reading("2026-09-01T07:30", 195), reading("2026-09-01T07:30", 195, Meal.BEFORE_MEAL)], "lecteur"
+        )
+        self.assertEqual(summary.added, 0)
+        self.assertEqual(self.store.readings()[0].note, ReadingNote((NoteTag.ILLNESS,), exclude_from_dosing=True))
+
+    def test_note_on_unknown_reading_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.store.set_note(reading("2026-09-02T07:30", 100), ReadingNote(text="?"))
+        with self.assertRaises(ValueError):
+            self.store.set_note(reading("2026-09-01T07:30", 196), ReadingNote(text="valeur différente"))
+        self.assertEqual(self.store.count_notes(), 0)
+
+    def test_since_until_filters_still_apply_with_notes(self):
+        self.store.set_note(self.noon, ReadingNote(text="après le marché"))
+        got = self.store.readings(since=datetime(2026, 9, 1, 12))
+        self.assertEqual([(r.mg_dl, r.note.text) for r in got], [(180, "après le marché")])
+
+    def test_unknown_tag_from_a_newer_version_is_ignored(self):
+        self.store.db.execute(
+            "INSERT INTO reading_notes VALUES (?, 195, '[\"future\", \"illness\"]', '', 1, '2026-09-01T08:00:00')",
+            (self.morning.device_time.isoformat(),),
+        )
+        self.assertEqual(self.store.readings()[0].note, ReadingNote((NoteTag.ILLNESS,), exclude_from_dosing=True))
+
+    def test_exclusion_without_motive_left_in_base_no_longer_excludes(self):
+        self.store.db.execute(
+            "INSERT INTO reading_notes VALUES (?, 195, '[\"future\"]', '', 1, '2026-09-01T08:00:00')",
+            (self.morning.device_time.isoformat(),),
+        )
+        with self.assertLogs("glucofi.store", "WARNING"):
+            note = self.store.readings()[0].note
+        self.assertFalse(note.exclude_from_dosing)
+
+    def test_dose_change_keeps_excluded_readings(self):
+        change = DoseChange(
+            datetime(2026, 9, 5, 20), 8, 6, DoseRule.INCREASE_HIGH_MORNINGS, ("a",), "",
+            excluded=("01/09/2026 07:30 : 1,95 g/L (Malade)",),
+        )
+        saved = self.store.add_dose_change(change)
+        self.assertIsNotNone(saved.id)
+        self.assertEqual(self.store.current_dose(), saved)
+        self.assertEqual(self.store.current_dose().excluded, ("01/09/2026 07:30 : 1,95 g/L (Malade)",))
 
 
 if __name__ == "__main__":

@@ -8,11 +8,16 @@ from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Adw, Gtk, Pango
+from gi.repository import Adw, GLib, Gtk, Pango
 
+from app.dialogs import note_dialog
 from app.measures import (
+    EXCLUDED_ICON,
+    EXCLUDED_TOOLTIP,
     MARKER_ICONS,
     MEAL_FILTERS,
+    NOTE_ICON,
+    REFUSED_TOOLTIP,
     RETAINED_ICON,
     RETAINED_TOOLTIP,
     MeasureDay,
@@ -21,6 +26,7 @@ from app.measures import (
     measure_view,
 )
 from app.state import AppState
+from contracts import Reading
 from app.widgets import clear, label, page, toggle_group
 from services.charts import PERIODS
 
@@ -31,9 +37,11 @@ PERIOD_SHORT_LABELS = {"all": "Tous", PERIODS[2]: "Soir"}
 
 
 class MeasuresPage:
-    def __init__(self, state: AppState, on_fetch: Callable[[], None]):
+    def __init__(self, state: AppState, on_fetch: Callable[[], None], on_changed: Callable[[], None] | None = None):
+        """`on_changed` après l'enregistrement d'une note (la proposition de dose peut changer), sinon refresh."""
         self.state = state
         self.on_fetch = on_fetch
+        self.on_changed = on_changed or self.refresh
         self.days = "90"
         self.period = "all"
         self.meal = "all"
@@ -231,10 +239,21 @@ class MeasuresPage:
         group.append(rows)
         return group
 
-    @staticmethod
-    def _measure_row(line: MeasureLine) -> Gtk.Widget:
-        row = Adw.ActionRow(title=line.title, subtitle=line.subtitle, use_markup=False)
+    def edit_note(self, reading: Reading) -> None:
+        note_dialog(self.widget, self.state, reading, self._note_saved)
+
+    def _note_saved(self) -> None:
+        """Reconstruit les onglets sans perdre la position de défilement de la liste."""
+        adjustment = self.widget.get_vadjustment()
+        position = adjustment.get_value()
+        self.on_changed()
+        GLib.idle_add(lambda: adjustment.set_value(position) and False)
+
+    def _measure_row(self, line: MeasureLine) -> Gtk.Widget:
+        subtitle = f"{line.subtitle}\n{line.note}" if line.note else line.subtitle
+        row = Adw.ActionRow(title=line.title, subtitle=subtitle, use_markup=False, subtitle_lines=3, activatable=True)
         row.add_css_class("measure-row")
+        row.connect("activated", lambda _r: self.edit_note(line.reading))
 
         badge = Gtk.Image(icon_name=line.marker.icon, valign=Gtk.Align.CENTER, tooltip_text=line.marker.label)
         badge.add_css_class("marker-badge")
@@ -242,11 +261,11 @@ class MeasuresPage:
         row.add_prefix(badge)
 
         if line.retained:
-            chip = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER, tooltip_text=RETAINED_TOOLTIP)
-            chip.add_css_class("retained-chip")
-            chip.append(Gtk.Image(icon_name=RETAINED_ICON))
-            chip.append(label("Retenue", "caption-heading"))
-            row.add_suffix(chip)
+            row.add_suffix(self._chip("Retenue", RETAINED_ICON, RETAINED_TOOLTIP, "retained-chip"))
+        if line.excluded:
+            row.add_suffix(self._chip("Écartée", EXCLUDED_ICON, EXCLUDED_TOOLTIP, "excluded-chip"))
+        if line.exclusion_refused:
+            row.add_suffix(self._chip("Comptée", "dialog-warning-symbolic", REFUSED_TOOLTIP, "refused-chip"))
 
         value = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER)
         pill = Gtk.Box(spacing=4, halign=Gtk.Align.END, tooltip_text=line.level_label)
@@ -258,5 +277,29 @@ class MeasuresPage:
         value.append(pill)
         value.append(label(line.mg, "caption", "dim-label", "numeric", xalign=1, margin_end=10))
         row.add_suffix(value)
-        row.update_property([Gtk.AccessibleProperty.DESCRIPTION], [f"{line.value}, {line.level_label}"])
+
+        note = Gtk.Button(icon_name=NOTE_ICON, valign=Gtk.Align.CENTER, tooltip_text=line.note_tooltip)
+        note.add_css_class("flat")
+        note.add_css_class("circular")
+        note.add_css_class("note-button")
+        if line.note:
+            note.add_css_class("has-note")
+        note.update_property([Gtk.AccessibleProperty.LABEL], [line.note_tooltip])
+        note.connect("clicked", lambda _b: self.edit_note(line.reading))
+        row.add_suffix(note)
+
+        description = f"{line.value}, {line.level_label}"
+        if line.note:
+            description += f". Note : {line.note}"
+        if line.excluded:
+            description += f". {EXCLUDED_TOOLTIP}"
+        row.update_property([Gtk.AccessibleProperty.DESCRIPTION], [description])
         return row
+
+    @staticmethod
+    def _chip(text: str, icon: str, tooltip: str, css: str) -> Gtk.Widget:
+        chip = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER, tooltip_text=tooltip)
+        chip.add_css_class(css)
+        chip.append(Gtk.Image(icon_name=icon))
+        chip.append(label(text, "caption-heading"))
+        return chip

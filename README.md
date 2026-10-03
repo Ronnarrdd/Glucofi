@@ -12,6 +12,7 @@ Application GTK4 / libadwaita pour Linux (Gnome) :
 
 - récupération des mesures d'un clic (ou import d'un export JSON), stockage local, utilisable hors ligne, aucune donnée envoyée nulle part ;
 - dose du matin et du soir, avec proposition d'ajustement de la dose du soir d'après les glycémies du matin, **validée manuellement** ;
+- notes sur les mesures (repas copieux, effet secondaire, maladie...), avec la possibilité d'écarter une glycémie du matin de l'ajustement ;
 - graphiques (14 / 30 / 90 jours) et export **PDF** pour le médecin.
 
 <p align="center">
@@ -43,6 +44,7 @@ Tout se modifie ensuite dans **Préférences**. Règles appliquées par `service
 - **Glycémie du matin** = parmi les mesures du jour entre 05:00 et 11:59 (réglable), la première marquée **« à jeun »** sur le lecteur, sinon la première marquée **« avant repas »** ou sans marqueur. Les mesures **« après repas »**, **« coucher »** et **« autre moment »** ne comptent jamais. L'heure est celle **affichée par le lecteur**. Les mesures sont dédoublonnées sur (heure du lecteur, valeur).
 - Glycémie du matin **sous le seuil bas** : baisse de la dose du soir d'un pas (jamais sous 0). **Au-dessus du seuil haut** le nombre de jours consécutifs indiqué : hausse d'un pas.
 - Seuls les matins **postérieurs à la dernière dose validée** comptent : la série repart de zéro après chaque changement. Un jour sans glycémie du matin casse la série. Une glycémie égale à un seuil est dans l'objectif (comparaisons en mg/dL entiers).
+- Une mesure dont la **note** demande de l'**écarter de l'ajustement** (repas copieux la veille, maladie, mesure douteuse...) est traitée comme absente : la mesure suivante de la plage du matin la remplace, sinon le jour n'a pas de glycémie du matin et la série de matins hauts repart de zéro. **Une glycémie sous le seuil bas n'est jamais écartée** : une note ne peut pas masquer une baisse de dose (si la valeur basse vous semble fausse, ne validez pas la baisse). Les mesures écartées sont signalées sur l'onglet Aujourd'hui, enregistrées avec la dose validée et listées dans le PDF.
 - La baisse passe avant la hausse. La dose du matin n'est jamais modifiée automatiquement.
 - Aucun ajustement n'est proposé si la dernière glycémie du matin date de plus de 2 jours : il faut d'abord récupérer les mesures.
 - Alertes sans effet sur la dose : hypoglycémie sous 0,70 g/L, glycémie au-dessus de 3,00 g/L (7 derniers jours), dose du soir à 0.
@@ -94,7 +96,8 @@ Si Glucofi affiche « Accès USB au lecteur refusé », débrancher et rebranche
    | astérisque | Autre moment |
    | point d'interrogation | Marqueur inconnu |
    | anneau | Sans marqueur |
-5. Menu > **Exporter en PDF…** : choix de la période, puis du fichier.
+5. **Notes** : un clic sur une mesure (onglet Mesures, ou glycémies du matin de l'onglet Aujourd'hui) ouvre sa note : étiquettes rapides (repas copieux, activité physique, malade, alcool, oubli d'injection, effet secondaire, mesure douteuse), texte libre (500 caractères), et interrupteur **Écarter de l'ajustement de la dose**, proposé seulement pour une glycémie du matin possible au-dessus du seuil bas. Écarter une mesure demande une étiquette ou un texte. La note s'affiche sous la mesure ; une pastille **Écartée** signale une mesure retirée de l'ajustement, une pastille **Comptée** une glycémie basse marquée à écarter mais comptée quand même. Les notes restent dans Glucofi : un nouvel import du lecteur ne les touche pas.
+6. Menu > **Exporter en PDF…** : choix de la période, puis du fichier. Le rapport donne le résumé des notes de la période, une colonne Note et l'état de chaque glycémie du matin (retenue, écartée, comptée), et les mesures écartées de chaque dose validée.
 
 Données : `~/.local/share/glucofi/glucofi.db` (SQLite). Journal : `~/.local/state/glucofi/glucofi.log` (lectures, imports, validations de dose).
 
@@ -104,7 +107,7 @@ Données : `~/.local/share/glucofi/glucofi.db` (SQLite). Journal : `~/.local/sta
 contracts/         types partagés (Reading, DoseChange, DosingSettings...) + schéma JSON d'accuchek
 services/device/   lancement d'accuchek, détection USB (sysfs), parsing (mesures, marqueurs, lecteur, horloge), erreurs typées
   accuchek-src/    accuchek (git subtree de github.com/Ronnarrdd/accuchek)
-services/store/    SQLite : mesures et marqueurs (import idempotent), lecteurs, doses, réglages, journal d'imports
+services/store/    SQLite : mesures et marqueurs (import idempotent), notes, lecteurs, doses, réglages, journal d'imports
 services/dosing/   moteur de titration pur et déterministe
 services/charts/   statistiques + figures matplotlib (écran et PDF)
 services/report/   rapport PDF (reportlab)

@@ -59,6 +59,65 @@ MEAL_LABELS_FR = {
 }
 
 
+class NoteTag(str, Enum):
+    """Étiquette rapide d'une note saisie dans Glucofi (pas sur le lecteur)."""
+
+    LARGE_MEAL = "large_meal"
+    EXERCISE = "exercise"
+    ILLNESS = "illness"
+    ALCOHOL = "alcohol"
+    MISSED_DOSE = "missed_dose"
+    SIDE_EFFECT = "side_effect"
+    DOUBTFUL = "doubtful"
+
+
+NOTE_TAG_LABELS_FR = {
+    NoteTag.LARGE_MEAL: "Repas copieux",
+    NoteTag.EXERCISE: "Activité physique",
+    NoteTag.ILLNESS: "Malade",
+    NoteTag.ALCOHOL: "Alcool",
+    NoteTag.MISSED_DOSE: "Oubli d'injection",
+    NoteTag.SIDE_EFFECT: "Effet secondaire",
+    NoteTag.DOUBTFUL: "Mesure douteuse",
+}
+
+NOTE_MAX_CHARS = 500
+
+
+@dataclass(frozen=True)
+class ReadingNote:
+    """Note sur une mesure : étiquettes (ordre de NoteTag), texte libre, demande d'écarter la mesure de l'ajustement.
+
+    Écarter une mesure demande un motif (étiquette ou texte) : le médecin doit pouvoir le lire dans le rapport.
+    """
+
+    tags: tuple[NoteTag, ...] = ()
+    text: str = ""
+    exclude_from_dosing: bool = False
+
+    def __post_init__(self) -> None:
+        chosen = {NoteTag(tag) for tag in self.tags}
+        object.__setattr__(self, "tags", tuple(tag for tag in NoteTag if tag in chosen))
+        text = self.text.strip()
+        if len(text) > NOTE_MAX_CHARS:
+            raise ValueError(f"note trop longue ({len(text)} caractères, {NOTE_MAX_CHARS} au plus)")
+        object.__setattr__(self, "text", text)
+        if self.exclude_from_dosing and not self.tags and not text:
+            raise ValueError("indiquez pourquoi la mesure est écartée (étiquette ou texte)")
+
+    @property
+    def empty(self) -> bool:
+        return not self.tags and not self.text and not self.exclude_from_dosing
+
+    @property
+    def summary(self) -> str:
+        """« Repas copieux, Malade · texte libre »."""
+        parts = [", ".join(NOTE_TAG_LABELS_FR[tag] for tag in self.tags)] if self.tags else []
+        if self.text:
+            parts.append(self.text)
+        return " · ".join(parts)
+
+
 @dataclass(frozen=True, order=True)
 class Reading:
     device_time: datetime
@@ -68,6 +127,7 @@ class Reading:
     # même mesure avec ou sans marqueur : un réimport ne la duplique pas
     meal: Meal | None = field(default=None, compare=False)
     meter_serial: str | None = field(default=None, compare=False)
+    note: ReadingNote | None = field(default=None, compare=False)
 
     @property
     def g_l(self) -> float:
@@ -188,6 +248,8 @@ class DoseChange:
     evidence: tuple[str, ...] = ()
     note: str = ""
     id: int | None = None
+    # glycémies du matin écartées de l'ajustement à la validation : « JJ/MM/AAAA HH:MM : x g/L (motif) »
+    excluded: tuple[str, ...] = ()
 
 
 # marqueurs qui peuvent être la glycémie du matin : "à jeun" passe avant, puis "avant repas" ou sans marqueur
@@ -253,6 +315,8 @@ class DoseProposal:
     evidence: tuple[Reading, ...] = ()
     mornings: tuple[MorningReading, ...] = ()
     alerts: tuple[Alert, ...] = ()
+    # glycémies du matin postérieures à la dose en cours, écartées par une note
+    excluded: tuple[Reading, ...] = ()
 
     @property
     def changes_dose(self) -> bool:

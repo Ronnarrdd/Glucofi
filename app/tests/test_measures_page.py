@@ -94,6 +94,55 @@ class MeasuresPageTest(unittest.TestCase):
         status[0].get_child().emit("clicked")
         self.assertEqual(self.fetches, 1)
 
+    def morning_with_note(self, state, mg: int = 200):
+        """Mesure du matin ajoutée à la démo, sur un jour sans autre mesure."""
+        from contracts import Meal, Reading
+
+        t = datetime(2026, 1, 2, 7, 0)
+        state.store.import_readings([Reading(t, mg, int(t.timestamp()), meal=Meal.FASTING)], "test")
+        return next(x for x in state.store.readings() if x.device_time == t)
+
+    def test_note_form_builds_the_note_and_explains_the_exclusion(self):
+        from app.dialogs import NoteForm
+        from contracts import NoteTag, ReadingNote
+
+        _page, state = self.make_page()
+        form = NoteForm(self.morning_with_note(state), state)
+        self.assertTrue(form.exclude.get_sensitive())
+        form.tags[NoteTag.LARGE_MEAL].set_active(True)
+        form.text.set_text("  anniversaire ")
+        form.exclude.set_active(True)
+        self.assertEqual(form.note(), ReadingNote((NoteTag.LARGE_MEAL,), "anniversaire", True))
+        form.tags[NoteTag.LARGE_MEAL].set_active(False)
+        form.text.set_text("")
+        with self.assertRaises(ValueError):
+            form.note()
+
+    def test_low_reading_cannot_be_excluded_in_the_form(self):
+        from app.dialogs import NoteForm
+
+        _page, state = self.make_page()
+        form = NoteForm(self.morning_with_note(state, mg=60), state)
+        self.assertFalse(form.exclude.get_sensitive())
+        form.exclude.set_active(True)
+        form.text.set_text("bandelette abîmée ?")
+        self.assertFalse(form.note().exclude_from_dosing)
+
+    def test_saved_note_shows_on_its_row_with_the_excluded_chip(self):
+        from contracts import NoteTag, ReadingNote
+
+        page, state = self.make_page()
+        reading = self.morning_with_note(state)
+        state.set_note(reading, ReadingNote((NoteTag.ILLNESS,), "fièvre", True))
+        page.days = "all"
+        page.refresh()
+        row = next(w for w in self.rows(page) if w.get_subtitle().endswith("Malade · fièvre"))
+        chips = [w for w in descendants(row) if isinstance(w, Gtk.Box) and w.has_css_class("excluded-chip")]
+        self.assertEqual(len(chips), 1)
+        buttons = [w for w in descendants(row) if isinstance(w, Gtk.Button) and w.has_css_class("note-button")]
+        self.assertEqual([b.has_css_class("has-note") for b in buttons], [True])
+        self.assertTrue(row.get_activatable())
+
     def test_no_protocol(self):
         page, _state = self.make_page(protocol=False)
         status = [w for w in descendants(page.widget) if isinstance(w, Adw.StatusPage)]

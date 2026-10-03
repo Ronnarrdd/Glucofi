@@ -18,6 +18,23 @@ class MeasuresViewSmokeTest(unittest.TestCase):
         seen = {r.meal for seed in range(3) for r in all_markers_patient(seed, days=30)}
         self.assertEqual(seen, set(Meal) | {None})
 
+    def test_synthetic_patients_have_excluded_and_counted_lines(self):
+        from app.measures import measure_view
+        from evals.measures_view import SETTINGS
+
+        lines = [
+            line for seed in range(3)
+            for line in measure_view(all_markers_patient(seed, days=30), SETTINGS, "all", "all", []).lines
+        ]
+        self.assertTrue(any(line.excluded for line in lines))
+        self.assertTrue(any(line.exclusion_refused for line in lines))
+        self.assertTrue(any(line.note for line in lines))
+
+    def test_eval_catches_a_view_that_ignores_notes(self):
+        with mock.patch("app.measures.excluded_from_dosing", lambda _r, _s: False):
+            _views, failures = check("mutation", all_markers_patient(0, days=30))
+        self.assertTrue(any("écartée incorrecte" in f["echec"] for f in failures))
+
     def test_eval_catches_a_double_counted_minimum_span(self):
         def old_spans(counts, total=100):
             n = sum(counts)
