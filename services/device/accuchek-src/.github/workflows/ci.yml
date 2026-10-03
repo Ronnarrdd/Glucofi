@@ -19,10 +19,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++ make libusb-1.0-0-dev python3-jsonschema
       - name: Build
-        run: make
+        run: make WERROR=-Werror
       - name: Tests (sanitizers)
         run: |
-          make test 2>&1 | tee test.log || {
+          make test WERROR=-Werror 2>&1 | tee test.log || {
             grep -E 'FAIL |Sanitizer|runtime error|Error [0-9]' test.log | head -20 | sed 's/^/::error::/'
             exit 1
           }
@@ -30,6 +30,17 @@ jobs:
         run: make schema-check
       - name: Fuzz
         run: make fuzz FUZZ_ARGS="--seed ${{ github.run_number }} --count ${{ github.event_name == 'schedule' && '200000' || '20000' }}"
+      # no -Werror here: with -O1 and sanitizers GCC 13 reports a false
+      # maybe-uninitialized inside libstdc++ std::regex; Build checks warnings
+      - name: Command line tests against a sanitized binary
+        run: |
+          make clean
+          make test OPTFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" 2>&1 | tee test.log || {
+            grep -E 'FAIL |Sanitizer|runtime error|Error [0-9]' test.log | head -20 | sed 's/^/::error::/'
+            exit 1
+          }
+          make clean
+          make WERROR=-Werror
       - name: Install layout
         run: |
           make install DESTDIR="$PWD/stage"

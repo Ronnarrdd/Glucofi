@@ -335,6 +335,7 @@
         Time now = {2026, 10, 1, 20, 42, 52};
         bool setTimeAccepted = true;
         uint16_t pmStoreHandle = 0x0100;
+        int glucoseCountError = 0;  // added to the glucose usage count the meter announces
     };
 
     template<typename Records, typename Build>
@@ -421,7 +422,7 @@
         t += line('>', sentWith([](uint8_t *b) { return accuchek::buildMdsRequest(b, 0x0010); }));
         t += line('<', s.describe ? mdsAnswer(0x0011, s.meter) : mdsAnswer(0x0011));
         t += line('>', sentWith([&](uint8_t *b) { return accuchek::buildSegmentInfoRequest(b, 0x0011, handle); }));
-        auto segments = guideSegments(total(s.glucose), total(s.meals));
+        auto segments = guideSegments(uint32_t(int(total(s.glucose)) + s.glucoseCountError), total(s.meals));
         t += line('<', s.describe ? segmentInfoResponse(0x0012, handle, segments) : actionResponse(0x0012, handle));
         uint16_t invokeId = 0x0012;
         if(s.setTime) {

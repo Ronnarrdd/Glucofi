@@ -1,19 +1,27 @@
-.PHONY: all clean test fuzz schema-check install uninstall
+.PHONY: all clean test fuzz schema-check install uninstall hooks
 SHELL = /bin/bash
 CXX = g++ -std=c++17
 LIBS = -lusb-1.0 -lm
 # portable by default; for a binary tuned to this machine: make OPTFLAGS="-O3 -march=native"
 OPTFLAGS ?= -O2
-CFLAGS = -g0 $(OPTFLAGS) -fomit-frame-pointer -DNDEBUG
+# the code builds without a single warning; CI and the pre-commit hook add WERROR=-Werror to keep it so
+WARNINGS = -Wall -Wextra -Wshadow
+WERROR ?=
+CFLAGS = -g0 $(OPTFLAGS) -fomit-frame-pointer -DNDEBUG $(WARNINGS) $(WERROR)
+# version: git describe in a clone of this repository, the VERSION file in a
+# copy of the sources (tarball, /tmp build, sources vendored in another repo,
+# whose tags are not ours)
+GIT_VERSION := $(shell [ "$$(git rev-parse --show-toplevel 2>/dev/null)" = "$(CURDIR)" ] && git describe --tags --dirty --match 'v[0-9]*' 2>/dev/null)
+VERSION := $(if $(GIT_VERSION),$(patsubst v%,%,$(GIT_VERSION)),$(shell cat VERSION))
 PREFIX ?= /usr/local
 UDEVDIR ?= /etc/udev/rules.d
 # sanitizers when installed (libasan-devel, libubsan-devel)
 SANITIZE := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=address,undefined - -o /dev/null 2>/dev/null \
     && echo -fsanitize=address,undefined -fno-sanitize-recover=all)
-TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE)
+TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE) $(WARNINGS) $(WERROR)
 
-LIB_SRCS = protocol.cpp session.cpp trace.cpp log.cpp
-TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp
+LIB_SRCS = protocol.cpp session.cpp trace.cpp output.cpp log.cpp
+TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp tests/test_output.cpp
 FUZZ_SRCS = tests/fuzz.cpp tests/fuzz_main.cpp
 
 all: accuchek
@@ -22,6 +30,14 @@ all: accuchek
 accuchek: .objs/main.o $(LIB_SRCS:%.cpp=.objs/%.o)
 	@echo lnk -- $@
 	@$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
+
+# main.o is rebuilt when the version changes, not on every make
+.objs/version: FORCE
+	@mkdir -p .objs
+	@[ "$$(cat $@ 2>/dev/null)" = "$(VERSION)" ] || echo "$(VERSION)" > $@
+.objs/main.o: .objs/version
+.objs/main.o: CFLAGS += -DACCUCHEK_VERSION='"$(VERSION)"'
+FORCE:
 
 .objs/%.o: %.cpp Makefile
 	@echo c++ -- $<
@@ -55,6 +71,11 @@ fuzz: .objs/test/fuzz
 # replay every fixture and validate the JSON against the schema (pip install jsonschema)
 schema-check: accuchek
 	@ACCUCHEK_BIN="$(CURDIR)/accuchek" python3 tests/check_schema.py
+
+# gate tests before every commit (hooks/pre-commit)
+hooks:
+	git config core.hooksPath hooks
+	@echo "pre-commit hook active: make test runs before every commit"
 
 # reload udev afterwards: udevadm control --reload && udevadm trigger --subsystem-match=usb
 install: accuchek

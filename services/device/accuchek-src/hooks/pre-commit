@@ -1,0 +1,4 @@
+#!/bin/sh
+# gate: unit, session and command line tests, warnings as errors
+# installed by: make hooks
+exec make -s test WERROR=-Werror

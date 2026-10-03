@@ -343,6 +343,74 @@ TEST(session_with_many_segments) {
     CHECK(t->finished());
 }
 
+// a meter that answers every ACK with one more segment, never flagged last;
+// the download used to loop forever, eating memory
+struct EndlessMeter : Transport {
+    ReplayTransport prefix;
+    sim::Bytes segment = sim::dataSegment(0x20, 0x0100, 0, {{2026, 1, 1, 8, 0, 100, 0}}, true, false);
+    size_t segmentsSent = 0;
+
+    explicit EndlessMeter(const std::string &trace) : prefix(trace) {}
+
+    int controlStatus(uint8_t *buffer, size_t len) override { return prefix.controlStatus(buffer, len); }
+    int bulkOut(const uint8_t *buffer, size_t len) override {
+        return prefix.finished() ? int(len) : prefix.bulkOut(buffer, len);
+    }
+    int bulkIn(uint8_t *buffer, size_t maxLen) override {
+        if(!prefix.finished()) {
+            return prefix.bulkIn(buffer, maxLen);
+        }
+        memcpy(buffer, segment.data(), segment.size());
+        ++segmentsSent;
+        return int(segment.size());
+    }
+    const char *errorName(int code) override { return prefix.errorName(code); }
+};
+
+// the session up to the glucose segment headers, the meter takes over after
+static std::string untilSegmentHeaders() {
+    auto full = sim::sessionTrace(kTwoSegments);
+    size_t end = 0;
+    for(int i=0; i<=kLineSegmentHeaders; ++i) {
+        end = full.find('\n', end) + 1;
+    }
+    return full.substr(0, end);
+}
+
+TEST(session_gives_up_on_a_segment_that_never_ends) {
+    EndlessMeter meter(untilSegmentHeaders());
+    SessionReport report;
+    std::vector<Sample> samples;
+    try {
+        downloadSamples(meter, SessionOptions(), report, [&](const Sample &s) { samples.push_back(s); });
+        CHECK(false);
+    } catch(const SessionError &e) {
+        CHECK_EQ(e.code, kExitProtocol);
+        CHECK_EQ(std::string(e.what()), "no last data segment after " + std::to_string(kMaxDataMessages) + " messages");
+    }
+    CHECK_EQ(meter.segmentsSent, kMaxDataMessages);
+    CHECK(samples.empty());
+}
+
+// the limit counts messages, a meter flagging the last one right at the limit passes
+TEST(session_data_message_limit_boundary) {
+    std::vector<std::vector<sim::Record>> segments;
+    for(int k=0; k<10; ++k) {
+        segments.push_back({{2024, 1, 1 + k, 8, 0, uint16_t(100 + k), 0}});
+    }
+    SessionOptions options;
+    options.maxDataMessages = 10;
+    SessionReport report;
+    CHECK_EQ(downloadWith(sim::sessionTrace(segments), options, report).size(), 10u);
+    options.maxDataMessages = 9;
+    try {
+        downloadWith(sim::sessionTrace(segments), options, report);
+        CHECK(false);
+    } catch(const SessionError &e) {
+        CHECK_EQ(std::string(e.what()), std::string("no last data segment after 9 messages"));
+    }
+}
+
 TEST(session_association_abort) {
     auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineMdsAnswer, "< E60000020000");
     auto f = sessionFailure(trace);
@@ -644,6 +712,48 @@ TEST(cli_now_needs_replay) {
     CHECK(0==bad.err.find("accuchek: bad --now"));
 }
 
+// mktime used to normalize any date: 2026/13/45 99:99:99 became 2027/02/18
+TEST(cli_now_must_be_a_real_local_time) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    for(const char *now : {"2026/13/45 99:99:99", "2026/02/30 12:00:00", "2026/03/29 02:30:00"}) {
+        auto r = runCli(trace, std::string("--now \"") + now + "\"");
+        CHECK_EQ(r.code, kExitUsage);
+        CHECK_EQ(r.err, std::string("accuchek: bad --now ") + now + ", no such local time\n");
+        CHECK_EQ(r.out, std::string(""));
+    }
+    auto trailing = runCli(trace, "--now \"2026/10/01 20:42:52x\"");
+    CHECK_EQ(trailing.code, kExitUsage);
+    CHECK(0==trailing.err.find("accuchek: bad --now 2026/10/01 20:42:52x, expected"));
+    // both sides of the autumn change exist, the first one is taken
+    CHECK_EQ(runCli(trace, "--now \"2026/10/25 02:30:00\"").code, kExitOk);
+}
+
+// atoi used to read "foo" as meter #0, and options given twice kept the last one
+TEST(cli_rejects_ambiguous_arguments) {
+    struct Case {
+        const char *args;
+        const char *err;
+    };
+    const Case cases[] = {
+        {"foo", "bad DEVICE_INDEX foo, expected 0, 1, 2... (see accuchek --help)"},
+        {"1x", "bad DEVICE_INDEX 1x, expected 0, 1, 2... (see accuchek --help)"},
+        {"+1", "bad DEVICE_INDEX +1, expected 0, 1, 2... (see accuchek --help)"},
+        {"99999999999", "bad DEVICE_INDEX 99999999999, expected 0, 1, 2... (see accuchek --help)"},
+        {"0 1", "DEVICE_INDEX given twice"},
+        {"--config a --config b", "--config given twice"},
+        {"--replay a --replay b", "--replay given twice"},
+        {"--capture a --capture b", "--capture given twice"},
+        {"--replay a --capture b", "--capture records a meter, it does not go with --replay"},
+        {"1 --replay a", "DEVICE_INDEX selects a meter, it does not go with --replay"},
+    };
+    for(const auto &c : cases) {
+        auto r = runBinary(c.args);
+        CHECK_EQ(r.code, kExitUsage);
+        CHECK_EQ(r.err, std::string("accuchek: ") + c.err + "\n");
+        CHECK_EQ(r.out, std::string(""));
+    }
+}
+
 TEST(cli_outputs_flagged_samples) {
     auto r = runCli(sim::sessionTrace(kFlags));
     CHECK_EQ(r.code, 0);
@@ -692,6 +802,37 @@ TEST(cli_empty_meter_outputs_no_readings) {
     CHECK_EQ(r.err, std::string(""));
 }
 
+// readings missing from a successful download used to go unnoticed unless the
+// caller compared "announced" and "received" itself
+TEST(cli_warns_when_readings_are_missing) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.glucoseCountError = 1;
+    auto r = runCli(sim::sessionTrace(s));
+    CHECK_EQ(r.code, kExitOk);
+    CHECK_EQ(r.err, std::string("accuchek: warning: the meter announced 4 readings, 3 received\n"));
+    CHECK(std::string::npos!=r.out.find("  \"glucose\": {\"announced\":4, \"received\":3},\n"));
+    CHECK_EQ(runCli(sim::sessionTrace(kTwoSegments)).err, std::string(""));
+}
+
+// a full disk used to end in exit code 0 with the readings lost
+TEST(cli_unwritable_stdout_is_an_error) {
+    auto full = runCli(sim::sessionTrace(kTwoSegments), ">/dev/full");
+    CHECK_EQ(full.code, kExitOutput);
+    CHECK_EQ(full.err, std::string("accuchek: cannot write on stdout: No space left on device\n"));
+    auto list = runBinary("--known-devices >/dev/full");
+    CHECK_EQ(list.code, kExitOutput);
+    auto help = runBinary("--help >/dev/full");
+    CHECK_EQ(help.code, kExitOutput);
+}
+
+// with fd 1 closed, the --capture trace would get fd 1 and the JSON with it
+TEST(cli_closed_stdout_is_refused_before_anything) {
+    auto r = runCli(sim::sessionTrace(kTwoSegments), ">&-");
+    CHECK_EQ(r.code, kExitOutput);
+    CHECK_EQ(r.err, std::string("accuchek: stdout is closed, nowhere to write the readings\n"));
+}
+
 TEST(cli_unreadable_trace_is_a_usage_error) {
     auto r = runBinary("--replay /nonexistent.trace");
     CHECK_EQ(r.code, kExitUsage);
@@ -715,9 +856,18 @@ TEST(cli_help_and_version) {
         CHECK(std::string::npos!=r.out.find("--known-devices"));
         CHECK_EQ(r.err, std::string(""));
     }
+}
+
+// git describe gives "2.1.0", "2.1.0-3-gabcdef0" or "2.1.0-dirty" once v2.1.0
+// is tagged: tagging a release without bumping VERSION fails here
+TEST(cli_version_starts_with_the_version_file) {
+    std::string version;
+    CHECK(readFile("VERSION", version));
+    CHECK(!version.empty() && '\n'==version.back());
+    version.pop_back();
     auto v = runBinary("--version");
     CHECK_EQ(v.code, kExitOk);
-    CHECK(0==v.out.find("accuchek "));
+    CHECK_EQ(v.out.substr(0, 9 + version.size()), "accuchek " + version);
     CHECK_EQ(v.out.back(), '\n');
 }
 
