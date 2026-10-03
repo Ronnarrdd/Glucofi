@@ -15,7 +15,7 @@ Application GTK4 / libadwaita pour Linux (Gnome) :
 - graphiques (14 / 30 / 90 jours) et export **PDF** pour le médecin.
 
 <p align="center">
-  <img src="docs/screenshots/aujourdhui.png" width="32%" alt="Onglet Aujourd'hui : doses et glycémies du matin">
+  <img src="docs/screenshots/aujourdhui.png" width="32%" alt="Onglet Mesures : résumé, répartition et mesures du jour avec leur marqueur">
   <img src="docs/screenshots/graphiques.png" width="32%" alt="Onglet Graphiques : courbe et glycémies du matin">
   <img src="docs/screenshots/premier-lancement.png" width="32%" alt="Premier lancement : protocole à recopier depuis l'ordonnance">
 </p>
