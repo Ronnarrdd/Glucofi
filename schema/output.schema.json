@@ -50,6 +50,7 @@
     "meal": {"oneOf": [{"$ref": "#/$defs/count"}, {"type": "null"}], "description": "meal marker segment, null if the meter has none"},
     "readings": {
       "type": "array",
+      "description": "in meter order; with --merge, the archive readings the meter no longer holds come first, and the counters above describe the download only",
       "items": {
         "type": "object",
         "required": ["id", "epoch", "timestamp", "mg/dL"],
@@ -58,7 +59,8 @@
           "epoch": {"type": ["integer", "null"], "minimum": 0},
           "timestamp": {"type": ["string", "null"], "pattern": "^\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}$"},
           "mg/dL": {"type": "integer", "minimum": 9, "maximum": 601, "description": "10 to 600; 601 when range=high (HI), 9 when range=low (LO)"},
-          "mmol/L": {"type": "number"},
+          "mmol/L": {"type": "number", "description": "mg/dL / 18 with one decimal, as a meter set to mmol/L shows it"},
+          "key": {"type": "string", "pattern": "^[0-9A-F]{16}$", "description": "raw meter time of the reading, 8 bytes in hex (BCD for a valid date: century, year, month, day, hour, minute, second, 1/100 s, so 2026100120471300 is 2026/10/01 20:47:13). With mg/dL and status it identifies a reading across downloads; 'id' is a position and shifts when the meter drops its oldest readings. Absent only for --merge archive readings written before 2.2"},
           "status": {"type": "integer", "minimum": 0, "description": "raw status from the meter; 0 for a normal reading"},
           "error": {"type": "string", "description": "unreadable reading (\"invalid date\": invalid BCD date), epoch and timestamp are then null"},
           "range": {"enum": ["high", "low"], "description": "off-scale reading (HI / LO on the meter)"},

@@ -6,18 +6,28 @@ on:
   schedule:
     - cron: "17 3 * * 1"
 
+permissions:
+  contents: read
+
+# actions pinned by commit SHA (a tag can be moved), kept current by
+# .github/dependabot.yml; analysis tools pinned to the versions used locally
+env:
+  GCOVR_VERSION: "8.6"
+  CPPCHECK_VERSION: "1.5.1" # PyPI cppcheck wheel, ships Cppcheck 2.17.1
+
 jobs:
-  test:
+  gcc:
     runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y g++ make libusb-1.0-0-dev python3-jsonschema
+          pipx install "gcovr==$GCOVR_VERSION"
       - name: Build
         run: make WERROR=-Werror
       - name: Tests (sanitizers)
@@ -30,19 +40,46 @@ jobs:
         run: make schema-check
       - name: Fuzz
         run: make fuzz FUZZ_ARGS="--seed ${{ github.run_number }} --count ${{ github.event_name == 'schedule' && '200000' || '20000' }}"
-      # no -Werror here: with -O1 and sanitizers GCC 13 reports a false
-      # maybe-uninitialized inside libstdc++ std::regex; Build checks warnings
       - name: Command line tests against a sanitized binary
         run: |
           make clean
-          make test OPTFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" 2>&1 | tee test.log || {
+          make test WERROR=-Werror OPTFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" 2>&1 | tee test.log || {
             grep -E 'FAIL |Sanitizer|runtime error|Error [0-9]' test.log | head -20 | sed 's/^/::error::/'
             exit 1
           }
           make clean
           make WERROR=-Werror
+      - name: Coverage
+        run: |
+          make coverage WERROR=-Werror | tee coverage.txt
+          { echo '```'; grep -v '^accuchek:' coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Install layout
         run: |
           make install DESTDIR="$PWD/stage"
           test -x stage/usr/local/bin/accuchek
           test -f stage/etc/udev/rules.d/70-accuchek.rules
+
+  clang:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang make libusb-1.0-0-dev
+      - name: Build
+        run: make CXX=clang++ WERROR=-Werror
+      - name: Tests (sanitizers)
+        run: make test CXX=clang++ WERROR=-Werror
+
+  cppcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Dependencies
+        run: pipx install "cppcheck==$CPPCHECK_VERSION"
+      - name: Static analysis
+        run: make cppcheck

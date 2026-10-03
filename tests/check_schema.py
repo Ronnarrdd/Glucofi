@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Replay every tests/fixtures/*.trace and validate stdout against the schema.
+"""Replay every tests/fixtures/*.trace and validate stdout against the schema,
+then replay it again with --merge into that output: valid, and unchanged.
 
 A trace may carry a "# args: ..." comment with the extra arguments it must be
 replayed with (for example --set-time --now "..."). Needs `jsonschema`
@@ -11,6 +12,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 
 try:
     import jsonschema
@@ -26,6 +28,26 @@ def replay_args(path):
             if line.startswith("# args:"):
                 return shlex.split(line[len("# args:"):])
     return []
+
+
+def check_merge(path, args, plain, validator):
+    """--merge of a replay into its own output: valid, and the same readings."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        f.write(plain)
+        archive = f.name
+    try:
+        run = subprocess.run([BIN, "--replay", path, "--merge", archive] + args,
+                             capture_output=True, text=True)
+    finally:
+        os.unlink(archive)
+    if run.returncode != 0:
+        return [f"--merge: exit code {run.returncode}: {run.stderr.strip()}"]
+    output = json.loads(run.stdout)
+    problems = [f"--merge: {'/'.join(map(str, e.absolute_path)) or '<root>'}: {e.message}"
+                for e in validator.iter_errors(output)]
+    if run.stdout != plain:
+        problems.append("--merge into its own output changed it")
+    return problems
 
 
 def main():
@@ -53,6 +75,7 @@ def main():
                 problems += [f"{'/'.join(map(str, e.absolute_path)) or '<root>'}: {e.message}"
                              for e in validator.iter_errors(output)]
                 readings += len(output.get("readings", []))
+                problems += check_merge(path, replay_args(path), run.stdout, validator)
         for p in problems:
             print(f"FAIL {path}: {p}")
         failures += bool(problems)

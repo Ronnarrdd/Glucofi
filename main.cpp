@@ -17,8 +17,9 @@
 
  */
 
-// stuff we need
 #include <log.h>
+#include <usb.h>
+#include <merge.h>
 #include <trace.h>
 #include <output.h>
 #include <session.h>
@@ -34,26 +35,23 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <sys/stat.h>
 #include <memory>
 #include <algorithm>
-#include <libusb-1.0/libusb.h>
-
-extern bool gQuiet;
 
 using namespace accuchek;
-
-// globals
-static Config g_config = defaultConfig();
-static std::vector<Sample> g_samples;
-static SessionOptions g_options;
-static SessionReport g_report;
-static std::string g_accessDenied;  // last known meter we were not allowed to open
 
 // reason the program stops, reported on stderr with its exit code
 struct Fatal {
     ExitCode code;
     std::string msg;
 };
+
+[[noreturn]] static void die(
+    ExitCode code,
+    const char *format,
+    ...
+) __attribute__((format(printf, 2, 3)));
 
 [[noreturn]] static void die(
     ExitCode code,
@@ -69,250 +67,38 @@ struct Fatal {
     throw Fatal{code, msg};
 }
 
-// add a config file to the built-in device list
-static void loadConfig(
-    const char *path
-) {
-    std::string text;
-    if(false==readFile(path, text)) {
-        die(kExitUsage, "cannot read config file %s", path);
-    }
-    g_config = configWithFile(text);
-}
-
-// a usb device (only things about the device we actually need)
-struct USBDevice {
-
-    // data
-    libusb_device *dev;
-    uint16_t vendorId;
-    uint16_t productId;
-    std::string vendor;
-    std::string product;
-    uint8_t sndEndPoint;
-    uint8_t rcvEndPoint;
-    uint8_t configValue;
-    uint8_t interfaceNumber;
-    uint8_t alternateSetting;
-
-    // constructor
-    USBDevice(
-        libusb_device *_dev,
-        uint16_t _vendorId,
-        uint16_t _productId,
-        const char *_vendor,
-        const char *_product,
-        uint8_t _sndEndPoint,   // NB: used to write _to_ device _from_ host
-        uint8_t _rcvEndPoint,   // NB: used to read _from_ device _to_ host
-        const libusb_config_descriptor *cfg,
-        const libusb_interface_descriptor *altSetting
-    )
-        :   dev(_dev),
-            vendorId(_vendorId),
-            productId(_productId),
-            vendor(_vendor),
-            product(_product),
-            sndEndPoint(_sndEndPoint),
-            rcvEndPoint(_rcvEndPoint),
-            configValue(cfg->bConfigurationValue),
-            interfaceNumber(altSetting->bInterfaceNumber),
-            alternateSetting(altSetting->bAlternateSetting)
-    {
-        // increase refcount on libusb device handle
-        libusb_ref_device(dev);
-    }
-
-    // copy constructor
-    USBDevice(
-        const USBDevice &rhs
-    )
-        :   dev(rhs.dev),
-            vendorId(rhs.vendorId),
-            productId(rhs.productId),
-            vendor(rhs.vendor),
-            product(rhs.product),
-            sndEndPoint(rhs.sndEndPoint),
-            rcvEndPoint(rhs.rcvEndPoint),
-            configValue(rhs.configValue),
-            interfaceNumber(rhs.interfaceNumber),
-            alternateSetting(rhs.alternateSetting)
-    {
-        // increase refcount on libusb device handle
-        libusb_ref_device(dev);
-    }
-    USBDevice &operator=(const USBDevice &) = delete;
-
-    // destructor
-    ~USBDevice() {
-        // decrease refcount on libusb device handle
-        libusb_unref_device(dev);
-    }
-
-    // show device specs
-    void show(
-        const char *msg
-    ) {
-        LOG_NFO(
-            "%s:\n"
-            "\n"
-            "    bus number:    %d\n"
-            "    dev address:   %d\n"
-            "    cfg value:     %d\n"
-            "    alt setting:   %d\n"
-            "    alt interface number: %d\n"
-            "    vendor:        (0x%04x) %s\n"
-            "    product:       (0x%04x) %s\n"
-            "    sndEndPnt:     %d\n"
-            "    rcvEndPnt:     %d\n"
-            ,
-            msg,
-            libusb_get_bus_number(dev),
-            libusb_get_device_address(dev),
-            (int)configValue,
-            (int)alternateSetting,
-            (int)interfaceNumber,
-            (int)vendorId,
-            vendor.c_str(),
-            (int)productId,
-            product.c_str(),
-            sndEndPoint,
-            rcvEndPoint
-        );
-    }
+// what the command line asks for
+struct Args {
+    int deviceIndex = -1;
+    const char *capturePath = 0;
+    const char *replayPath = 0;
+    const char *configPath = 0;
+    const char *nowText = 0;
+    const char *mergePath = 0;
+    const char *waitText = 0;
+    long waitSeconds = 0;       // 0: the meter must already be on the bus
+    bool listDevices = false;
+    bool csv = false;
+    SessionOptions options;
 };
 
-// transport over an opened and claimed libusb device
-struct LibusbTransport : Transport {
-
-    LibusbTransport(
-        libusb_device_handle *_devHandle,
-        uint8_t _sndEndPoint,
-        uint8_t _rcvEndPoint
-    )
-        :   devHandle(_devHandle),
-            sndEndPoint(_sndEndPoint),
-            rcvEndPoint(_rcvEndPoint)
-    {
-    }
-
-    int controlStatus(
-        uint8_t *buffer,
-        size_t len
-    ) override {
-        return libusb_control_transfer(
-            devHandle,
-            (
-                LIBUSB_REQUEST_TYPE_STANDARD |
-                LIBUSB_RECIPIENT_DEVICE      |
-                LIBUSB_ENDPOINT_IN
-            ),
-            LIBUSB_REQUEST_GET_STATUS,
-            0,
-            0,
-            buffer,
-            len,
-            kTimeoutMs
-        );
-    }
-
-    int bulkOut(
-        const uint8_t *buffer,
-        size_t len
-    ) override {
-        int bytesWritten = -1;
-        auto fail = libusb_bulk_transfer(
-            devHandle,
-            sndEndPoint,
-            const_cast<uint8_t *>(buffer),
-            len,
-            &bytesWritten,
-            kTimeoutMs
-        );
-        return (0!=fail ? fail : bytesWritten);
-    }
-
-    int bulkIn(
-        uint8_t *buffer,
-        size_t maxLen
-    ) override {
-        int bytesRead = 0;
-        auto fail = libusb_bulk_transfer(
-            devHandle,
-            rcvEndPoint,
-            buffer,
-            maxLen,
-            &bytesRead,
-            kTimeoutMs
-        );
-        return (0!=fail ? fail : bytesRead);
-    }
-
-    const char *errorName(
-        int code
-    ) override {
-        return libusb_strerror(code);
-    }
-
-    static constexpr unsigned kTimeoutMs = 5000;
-    libusb_device_handle *devHandle;
-    uint8_t sndEndPoint;
-    uint8_t rcvEndPoint;
+// one download: the samples are kept in memory until it succeeds
+struct Download {
+    SessionReport report;
+    std::vector<Sample> samples;
 };
-
-/*
-
-    syslog excerpt from an actual accuchek connecting:
-
-        May 26 14:35:34 machine kernel: [598051.987118] usb 3-1: new full-speed USB device number 59 using xhci_hcd
-        May 26 14:35:34 machine kernel: [598052.141001] usb 3-1: New USB device found, idVendor=173a, idProduct=21d5, bcdDevice= 1.00
-        May 26 14:35:34 machine kernel: [598052.141005] usb 3-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
-        May 26 14:35:34 machine kernel: [598052.141007] usb 3-1: Product: ACCU-CHEK Guide
-        May 26 14:35:34 machine kernel: [598052.141008] usb 3-1: Manufacturer: Roche
-
-    lsusb -v excerpt:
-
-        Bus 003Device 118: ID 173a:21d5 Roche
-          idVendor           0x173a Roche
-          idProduct          0x21d5
-          bNumConfigurations      1
-          Configuration Descriptor:
-            bNumInterfaces          1
-            bConfigurationValue     1
-            Interface Descriptor:
-              bInterfaceNumber        0
-              bAlternateSetting       0
-              bNumEndpoints           2
-              bInterfaceClass        15
-              iInterface              4 Personal Healthcare Device Class
-              Endpoint Descriptor:
-                bEndpointAddress     0x81  EP 1 IN
-                bmAttributes            2
-                  Transfer Type            Bulk
-                wMaxPacketSize     0x0040  1x 64 bytes
-              Endpoint Descriptor:
-                bEndpointAddress     0x01  EP 1 OUT
-                bmAttributes            2
-                  Transfer Type            Bulk
-                wMaxPacketSize     0x0040  1x 64 bytes
-
-    endpoints:
-
-        bEndpointAddress     0x81  EP 1 IN      (device to host)
-        bEndpointAddress     0x01  EP 1 OUT     (host to device)
-        rcvEndPnt:     129
-        sndEndPnt:     1
-
-*/
 
 // run the protocol, keep samples in memory until it succeeds
 static void runSession(
-    Transport &transport
+    Transport &transport,
+    const SessionOptions &options,
+    Download &download
 ) {
     try {
-        downloadSamples(transport, g_options, g_report, [](const Sample &s) { g_samples.push_back(s); });
+        downloadSamples(transport, options, download.report, [&](const Sample &s) { download.samples.push_back(s); });
     } catch(const SessionError &e) {
-        auto received = g_report.glucose.received;
-        g_samples.clear();
+        auto received = download.report.glucose.received;
+        download.samples.clear();
         if(0<received) {
             die(e.code, "%s (%d samples received before the error, none written)", e.what(), (int)received);
         }
@@ -320,376 +106,129 @@ static void runSession(
     }
 }
 
-// exit code for a failed libusb call on the meter
-static ExitCode usbFailure(
-    int code
+// talk to the meter over transport, recording the exchange when asked to
+static void runRecorded(
+    Transport &transport,
+    const Args &args,
+    Download &download
 ) {
-    return (LIBUSB_ERROR_ACCESS==code ? kExitAccessDenied : kExitTransfer);
-}
-
-// an opened device handle, closed on every path out
-struct DeviceHandle {
-    libusb_device_handle *handle = 0;
-    DeviceHandle() = default;
-    DeviceHandle(const DeviceHandle &) = delete;
-    DeviceHandle &operator=(const DeviceHandle &) = delete;
-    ~DeviceHandle() {
-        if(0!=handle) {
-            libusb_close(handle);
+    if(0==args.capturePath) {
+        runSession(transport, args.options, download);
+        return;
+    }
+    auto fp = fopen(args.capturePath, "w");
+    if(0==fp) {
+        die(kExitUsage, "cannot write trace %s", args.capturePath);
+    }
+    // keep the trace of a failed download too, that is when it is most useful
+    auto closeTrace = [&]() {
+        auto failed = (0!=ferror(fp));
+        failed = (0!=fclose(fp)) || failed;
+        if(failed) {
+            fprintf(stderr, "accuchek: warning: cannot write trace %s, it is incomplete\n", args.capturePath);
         }
-    }
-};
-
-// the meter interface, given back on every path out: released, then the
-// kernel driver we detached (if any) is reattached
-struct ClaimedInterface {
-    libusb_device_handle *handle;
-    int interface;
-    bool claimed = false;
-    bool driverDetached = false;
-    ClaimedInterface(libusb_device_handle *_handle, int _interface) : handle(_handle), interface(_interface) {}
-    ClaimedInterface(const ClaimedInterface &) = delete;
-    ClaimedInterface &operator=(const ClaimedInterface &) = delete;
-    ~ClaimedInterface() {
-        if(claimed) {
-            libusb_release_interface(handle, interface);
-        }
-        if(driverDetached) {
-            libusb_attach_kernel_driver(handle, interface);
-        }
-    }
-};
-
-// open an accuchek USB device and download data from it
-static void operateDevice(
-    USBDevice &usbDevice,
-    const char *capturePath
-) {
-    // open device
-    DeviceHandle device;
-    auto fail0 = libusb_open(usbDevice.dev, &device.handle);
-    if(fail0) {
-        device.handle = 0;
-        die(usbFailure(fail0), "cannot open meter: %s", libusb_strerror(fail0));
-    }
-    auto devHandle = device.handle;
-    ClaimedInterface interface(devHandle, usbDevice.interfaceNumber);
-
-    // detach whatever kernel driver may have been attached to it (none for a
-    // PHDC meter on Linux: LIBUSB_ERROR_NOT_FOUND)
-    interface.driverDetached = (0==libusb_detach_kernel_driver(devHandle, usbDevice.interfaceNumber));
-
-    // load the configuration chosen during detection phase
-    auto fail1 = libusb_set_configuration(devHandle, usbDevice.configValue);
-    if(fail1<0) {
-        die(usbFailure(fail1), "cannot configure meter: %s", libusb_strerror(fail1));
-    }
-
-    // claim interface
-    auto fail2 = libusb_claim_interface(devHandle, usbDevice.interfaceNumber);
-    if(fail2<0) {
-        die(usbFailure(fail2), "cannot claim meter interface: %s", libusb_strerror(fail2));
-    }
-    interface.claimed = true;
-
-    // set alt setting chosen during detection phase on interface
-    auto fail3 = libusb_set_interface_alt_setting(devHandle, usbDevice.interfaceNumber, usbDevice.alternateSetting);
-    if(fail3<0) {
-        die(usbFailure(fail3), "cannot set meter alt setting: %s", libusb_strerror(fail3));
-    }
-
-    // make some noise
-    LOG_NFO("using device snd endpoint = %d", usbDevice.sndEndPoint);
-    LOG_NFO("using device rcv endpoint = %d\n", usbDevice.rcvEndPoint);
-
-    LibusbTransport usb(devHandle, usbDevice.sndEndPoint, usbDevice.rcvEndPoint);
-    if(0!=capturePath) {
-        auto fp = fopen(capturePath, "w");
-        if(0==fp) {
-            die(kExitUsage, "cannot write trace %s", capturePath);
-        }
-        // keep the trace of a failed download too, that is when it is most useful
-        auto closeTrace = [&]() {
-            auto failed = (0!=ferror(fp));
-            failed = (0!=fclose(fp)) || failed;
-            if(failed) {
-                fprintf(stderr, "accuchek: warning: cannot write trace %s, it is incomplete\n", capturePath);
-            }
-        };
-        RecordingTransport recording(usb, fp);
-        try {
-            runSession(recording);
-        } catch(const Fatal &) {
-            closeTrace();
-            throw;
-        }
+    };
+    RecordingTransport recording(transport, fp);
+    try {
+        runSession(recording, args.options, download);
+    } catch(const Fatal &) {
         closeTrace();
+        throw;
+    }
+    closeTrace();
+}
+
+// find the selected meter on the bus and download from it
+static void downloadFromMeter(
+    const Config &config,
+    const Args &args,
+    Download &download
+) {
+    UsbContext usb;
+    MeterScan scan;
+    auto index = std::max(0, args.deviceIndex);
+    auto found = [&]() {
+        scan = scanMeters(usb.context, config);
+        return index<int(scan.meters.size());
+    };
+    if(0<args.waitSeconds) {
+        if(isatty(STDERR_FILENO)) {
+            fprintf(stderr, "accuchek: waiting up to %ld s for the meter, plug it in\n", args.waitSeconds);
+        }
+        // a meter just plugged in is refused until udev gives access: keep looking
+        waitFor(found, args.waitSeconds * 1000, 500, monotonicMs, sleepMs);
     } else {
-        runSession(usb);
+        found();
     }
-    LOG_NFO("closing usb device");
+    auto waited = (0<args.waitSeconds ? " after waiting " + std::to_string(args.waitSeconds) + " s" : std::string());
+    if(scan.meters.empty()) {
+        if(!scan.accessDenied.empty()) {
+            die(kExitAccessDenied, "permission denied on USB meter %s", scan.accessDenied.c_str());
+        }
+        die(kExitNoDevice, "no Accu-Chek meter found on the USB bus%s", waited.c_str());
+    }
+    if(int(scan.meters.size())<=index) {
+        die(kExitNoDevice, "meter #%d selected but only %d found%s", index, (int)scan.meters.size(), waited.c_str());
+    }
+    withMeter(scan.meters[index], [&](Transport &transport) { runRecorded(transport, args, download); });
 }
-
-// process one USB device and add it to the list if it matches requirements
-static void addDeviceIfAccuChek(
-    std::vector<USBDevice> &validDevices,
-    libusb_device *dev
-) {
-
-    // get USB device description
-    libusb_device_descriptor dsc;
-    auto fail = libusb_get_device_descriptor(dev, &dsc);
-    if(0!=fail) {
-        LOG_WRN("libusb_get_device_descriptor failed");
-        return;
-    }
-
-    // only look closer at known meters, never open anything else
-    if(!isDeviceAllowed(g_config, dsc.idVendor, dsc.idProduct)) {
-        LOG_NFO("not a match, %04x:%04x is not a known meter", (int)dsc.idVendor, (int)dsc.idProduct);
-        return;
-    }
-
-    // ugly trick to "goto done" over declarations using a break
-    struct libusb_config_descriptor *cfg = 0;
-    do {
-
-        // accuchek has one config, anything with more or less is a bust
-        if(1!=dsc.bNumConfigurations) {
-            LOG_NFO("not a match, too many configs to be an accuchek");
-            break;
-        }
-
-        // load first config
-        auto confIndex = 0;
-        auto fail0 = libusb_get_config_descriptor(dev, confIndex, &cfg);
-        if(0!=fail0) {
-            LOG_WRN("libusb_get_device_descriptor failed");
-            break;
-        }
-
-        // accuchek single config has one interface, anything with more or less is a bust
-        if(1!=cfg->bNumInterfaces) {
-            LOG_NFO("not a match, too many interfaces to be an accuchek");
-            break;
-        }
-
-        // look at all "alt settings" for first interface
-        auto interfaceIndex = 0;
-        auto interface = &(cfg->interface[interfaceIndex]);
-
-        // accuchek single config has one alt setting, anything with more or less is a bust
-        if(1!=interface->num_altsetting) {
-            LOG_NFO("not a match, too many alt settings to be an accuchek");
-            break;
-        }
-
-        // accuchek has two endpoints, anything with more or less is a bust
-        int altSettingIndex = 0;
-        auto altSetting = &(interface->altsetting[altSettingIndex]);
-        if(2!=altSetting->bNumEndpoints) {
-            LOG_NFO("not a match, too many endpoints to be an accuchek");
-            break;
-        }
-
-        // look for endpoints on altsetting that match our criteria
-        auto in = 0;    // 0 is an invalid endpoint
-        auto out = 0;   // 0 is an invalid endpoint
-        for(auto endPointIndex=0; endPointIndex<altSetting->bNumEndpoints; ++endPointIndex) {
-            // accuchek endpoints should both have a max packet size of 64
-            auto endPoint = &(altSetting->endpoint[endPointIndex]);
-            if(64==endPoint->wMaxPacketSize) {
-                // device must be non-interrupt type
-                auto attributes = (endPoint->bmAttributes & LIBUSB_TRANSFER_TYPE_MASK);
-                auto isInterrupt = (LIBUSB_TRANSFER_TYPE_INTERRUPT==attributes);
-                if(false==isInterrupt) {
-                    // LIBUSB_ENDPOINT_IN means endpoint is used to transfer date from the device to the host
-                    auto isInput = (LIBUSB_ENDPOINT_IN & endPoint->bEndpointAddress);
-                    if(isInput) {
-                        in = endPoint->bEndpointAddress;
-                    } else {
-                        out = endPoint->bEndpointAddress;
-                    }
-                }
-            }
-        }
-
-        // skip devices that dont have at least one input and one output
-        auto ok = (0!=in && 0!=out);
-        if(false==ok) {
-            LOG_NFO("not a match, need at least one input endpoint and one output endpoint");
-            break;
-        }
-
-        // we found a device seems to fit the bill, open it
-        LOG_NFO("found a usb device that looks good, checking further by opening it");
-        DeviceHandle probe;
-        auto fail1 = libusb_open(dev, &probe.handle);
-        if(fail1) {
-            probe.handle = 0;
-            LOG_WRN("libusb_open failed: %s", libusb_strerror(fail1));
-            if(LIBUSB_ERROR_ACCESS==fail1) {
-                char where[128];
-                snprintf(
-                    where,
-                    sizeof(where),
-                    "%04x:%04x on bus %03d device %03d",
-                    (int)dsc.idVendor,
-                    (int)dsc.idProduct,
-                    (int)libusb_get_bus_number(dev),
-                    (int)libusb_get_device_address(dev)
-                );
-                g_accessDenied = where;
-            }
-            break;
-        }
-
-        // get device vendor
-        char vendor[512];
-        memset(vendor, 0, sizeof(vendor));
-        auto r0 = libusb_get_string_descriptor_ascii(
-            probe.handle,
-            dsc.iManufacturer,
-            (uint8_t*)vendor,
-            (-1+sizeof(vendor))
-        );
-        if(r0<0) {
-            LOG_NFO("not a match, vendorId unreadable");
-            break;
-        }
-
-        // get product id
-        char product[512];
-        memset(product, 0, sizeof(product));
-        auto r1 = libusb_get_string_descriptor_ascii(
-            probe.handle,
-            dsc.iProduct,
-            (uint8_t*)product,
-            (-1+sizeof(product))
-        );
-        if(r1<0) {
-            LOG_NFO("not a match, productId unreadable");
-            break;
-        }
-
-        // we have a new valid device, add it to the list
-        LOG_NFO("========> found a matching USB device: mfgr=%s device=%s", vendor, product);
-        validDevices.emplace_back(
-            dev,
-            dsc.idVendor,
-            dsc.idProduct,
-            vendor,
-            product,
-            out,
-            in,
-            cfg,
-            altSetting
-        );
-    } while(0);
-
-    // free config data structure
-    libusb_free_config_descriptor(cfg);
-}
-
-// find all possible accuchek devices, pick one and download data from it
-static void findAndOperateAccuChek(
-    libusb_context *libUSBContext,
-    int ix,
-    const char *capturePath
-) {
-
-    // obtain a list of all USB devices in the system
-    libusb_device **devices = 0;
-    LOG_NFO("getting list of all USB devices in system from libusb");
-    auto count = libusb_get_device_list(libUSBContext, &devices);
-    LOG_NFO("found %d USB devices in system", (int)count);
-
-    // check them one by one and add to the list if specs are a match
-    std::vector<USBDevice> validDevices;
-    LOG_NFO("searching for valid accuchek devices");
-    for(int i=0; i<count; ++i) {
-        LOG_NFO("checking if device %d is an accuchek", (int)i);
-        addDeviceIfAccuChek(validDevices, devices[i]);
-    }
-
-    // clean up device list
-    libusb_free_device_list(devices, 1);
-
-    // if no devices found, bail
-    if(0==validDevices.size()) {
-        if(!g_accessDenied.empty()) {
-            die(kExitAccessDenied, "permission denied on USB meter %s", g_accessDenied.c_str());
-        }
-        die(kExitNoDevice, "no Accu-Chek meter found on the USB bus");
-    }
-
-    // make some noise
-    LOG_NFO(
-        "found altogether %d accuchek devices",
-        (int)validDevices.size()
-    );
-
-    // make sure we user referes to a valid device
-    if(int(validDevices.size())<=int(ix)) {
-        die(kExitNoDevice, "meter #%d selected but only %d found", ix, (int)validDevices.size());
-    }
-
-    // select a specific device (first seen or as specified by user)
-    auto selectedIndex = std::max(0, ix);
-    auto &selectedDevice = validDevices[selectedIndex];
-
-    // show details of selected device as gathered from libusb
-    char buf[256];
-    snprintf(
-        buf,
-        sizeof(buf),
-        "selecting accuchek device #%d:",
-        (int)selectedIndex
-    );
-    selectedDevice.show(buf);
-
-    // talk to device to download data from it
-    operateDevice(selectedDevice, capturePath);
-}
-
-// the libusb context, exited on every path out (after every handle and
-// device it gave is released: declare it first)
-struct UsbContext {
-    libusb_context *context = 0;
-    UsbContext() {
-        LOG_NFO("opening libusb");
-        auto fail = libusb_init(&context);
-        if(0!=fail || 0==context) {
-            context = 0;
-            die(kExitTransfer, "cannot initialize libusb: %s", libusb_strerror(fail));
-        }
-        LOG_NFO("libusb opened OK");
-    }
-    UsbContext(const UsbContext &) = delete;
-    UsbContext &operator=(const UsbContext &) = delete;
-    ~UsbContext() {
-        if(0!=context) {
-            LOG_NFO("closing libusb");
-            libusb_exit(context);
-        }
-    }
-};
 
 // replay a recorded trace instead of talking to a device
 static void replayTrace(
-    const char *path
+    const Args &args,
+    Download &download
 ) {
     std::string text;
-    if(false==readFile(path, text)) {
-        die(kExitUsage, "cannot read trace %s", path);
+    if(false==readFile(args.replayPath, text)) {
+        die(kExitUsage, "cannot read trace %s", args.replayPath);
     }
     std::unique_ptr<ReplayTransport> replay;
     try {
         replay.reset(new ReplayTransport(text));
     } catch(const std::runtime_error &e) {
-        die(kExitUsage, "bad trace %s: %s", path, e.what());
+        die(kExitUsage, "bad trace %s: %s", args.replayPath, e.what());
     }
-    runSession(*replay);
+    runSession(*replay, args.options, download);
+}
+
+// the archive of --merge, checked before talking to the meter
+static Archive loadArchive(
+    const char *path
+) {
+    // "accuchek --merge a.json > a.json": the shell has already emptied it
+    struct stat out;
+    struct stat in;
+    if(0==fstat(STDOUT_FILENO, &out) && 0==stat(path, &in) && out.st_dev==in.st_dev && out.st_ino==in.st_ino) {
+        die(kExitUsage, "stdout is the archive %s itself, emptied by the shell before accuchek started: "
+            "write to another file, then rename it", path);
+    }
+    std::string text;
+    if(false==readFile(path, text)) {
+        die(kExitUsage, "cannot read archive %s", path);
+    }
+    Archive archive;
+    std::string error;
+    if(!parseArchive(text, archive, error)) {
+        die(kExitUsage, "bad archive %s: %s", path, error.c_str());
+    }
+    return archive;
+}
+
+// the archive readings the meter no longer holds, then the download
+static void mergeArchive(
+    const char *path,
+    const Archive &archive,
+    Download &download
+) {
+    const auto &serial = download.report.meter.serial;
+    if(!archive.serial.empty() && download.report.hasMeter && !serial.empty() && archive.serial!=serial) {
+        die(kExitUsage, "archive %s holds the readings of meter %s, this is meter %s: keep one archive per meter",
+            path, archive.serial.c_str(), serial.c_str());
+    }
+    std::vector<Sample> merged;
+    auto kept = mergeSamples(archive.samples, download.samples, merged);
+    LOG_NFO("merge: %d archive readings kept, %d downloaded", (int)kept, (int)download.samples.size());
+    download.samples.swap(merged);
 }
 
 // set by the Makefile from git describe or the VERSION file
@@ -698,8 +237,9 @@ static void replayTrace(
 #endif
 
 static const char kUsage[] =
-    "usage: accuchek [DEVICE_INDEX] [--config FILE] [--set-time] [--capture TRACE]\n"
-    "       accuchek --replay TRACE [--set-time --now \"YYYY/MM/DD HH:MM:SS\"]\n"
+    "usage: accuchek [DEVICE_INDEX] [--config FILE] [--wait SECONDS] [--set-time] [--capture TRACE]\n"
+    "                [--merge ARCHIVE] [--csv]\n"
+    "       accuchek --replay TRACE [--set-time --now \"YYYY/MM/DD HH:MM:SS\"] [--merge ARCHIVE] [--csv]\n"
     "       accuchek [--config FILE] --known-devices\n"
     "       accuchek --help | --version\n"
     "\n"
@@ -707,11 +247,16 @@ static const char kUsage[] =
     "them as one JSON object on stdout.\n"
     "\n"
     "  DEVICE_INDEX      read the Nth known meter on the bus (default: the first)\n"
+    "  --wait SECONDS    wait up to SECONDS (1 to 3600) for the meter to be plugged in\n"
+    "  --csv             one CSV line per reading instead of the JSON object\n"
     "  --set-time        set the meter clock to the PC clock if they differ by\n"
     "                    more than 60 s and the PC clock is NTP synchronized\n"
     "  --capture TRACE   also record the USB exchange to TRACE (health data!)\n"
     "  --replay TRACE    replay a recorded exchange instead of talking to a meter\n"
     "  --now TIME        PC clock to assume while replaying\n"
+    "  --merge ARCHIVE   also output the readings of ARCHIVE (an earlier output)\n"
+    "                    that the meter no longer holds, without duplicates;\n"
+    "                    write to another file, then rename it over ARCHIVE\n"
     "  --config FILE     add or disable meter models (see config.example.txt)\n"
     "  --known-devices   list accepted meters as vendor:product\n"
     "\n"
@@ -719,19 +264,49 @@ static const char kUsage[] =
     "4 USB transfer failed, 5 protocol error, 6 stdout not writable.\n"
     "Set ACCUCHEK_DBG=1 for logs on stderr.\n";
 
-// everything but writing on stdout: returns what to write, throws Fatal on failure
-static std::string run(
-    int argc,
-    char *argv[]
+// a plain decimal number in [0, max], refused otherwise (atoi read "foo" as 0)
+static bool parseCount(
+    const char *text,
+    long max,
+    long &n
 ) {
+    char *end = 0;
+    errno = 0;
+    n = strtol(text, &end, 10);
+    return isdigit((unsigned char)text[0]) && 0==*end && 0==errno && n<=max;
+}
 
-    // parse command line
-    int deviceIndex = -1;
-    const char *capturePath = 0;
-    const char *replayPath = 0;
-    const char *configPath = 0;
-    const char *nowText = 0;
-    bool listDevices = false;
+// PC clock given by --now, a real local time
+static time_t parseNow(
+    const char *nowText
+) {
+    struct tm t;
+    memset(&t, 0, sizeof(t));
+    int consumed = 0;
+    if(6!=sscanf(nowText, "%d/%d/%d %d:%d:%d%n", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec, &consumed) ||
+        0!=nowText[consumed]) {
+        die(kExitUsage, "bad --now %s, expected \"YYYY/MM/DD HH:MM:SS\"", nowText);
+    }
+    t.tm_year -= 1900;
+    t.tm_mon -= 1;
+    t.tm_isdst = -1;
+    auto asked = t;
+    auto now = mktime(&t);
+    // mktime normalizes 2026/13/45 into 2027/02/14 and shifts times in the
+    // spring forward gap: a date that does not come back unchanged is wrong
+    if(asked.tm_year!=t.tm_year || asked.tm_mon!=t.tm_mon || asked.tm_mday!=t.tm_mday ||
+        asked.tm_hour!=t.tm_hour || asked.tm_min!=t.tm_min || asked.tm_sec!=t.tm_sec) {
+        die(kExitUsage, "bad --now %s, no such local time", nowText);
+    }
+    return now;
+}
+
+// returns the text to print instead of downloading (--help...), "" otherwise
+static std::string parseArgs(
+    int argc,
+    char *argv[],
+    Args &args
+) {
     // an option given twice is a typo or a script bug, never "last one wins"
     auto value = [&](int &i, const char *&slot) {
         if(0!=slot) {
@@ -745,96 +320,119 @@ static std::string run(
         } else if(0==strcmp(argv[i], "--version")) {
             return std::string("accuchek ") + ACCUCHEK_VERSION + "\n";
         } else if(0==strcmp(argv[i], "--config") && i+1<argc) {
-            value(i, configPath);
+            value(i, args.configPath);
         } else if(0==strcmp(argv[i], "--set-time")) {
-            g_options.setTime = true;
+            args.options.setTime = true;
         } else if(0==strcmp(argv[i], "--now") && i+1<argc) {
-            value(i, nowText);
+            value(i, args.nowText);
         } else if(0==strcmp(argv[i], "--known-devices")) {
-            listDevices = true;
+            args.listDevices = true;
         } else if(0==strcmp(argv[i], "--capture") && i+1<argc) {
-            value(i, capturePath);
+            value(i, args.capturePath);
         } else if(0==strcmp(argv[i], "--replay") && i+1<argc) {
-            value(i, replayPath);
+            value(i, args.replayPath);
+        } else if(0==strcmp(argv[i], "--merge") && i+1<argc) {
+            value(i, args.mergePath);
+        } else if(0==strcmp(argv[i], "--wait") && i+1<argc) {
+            value(i, args.waitText);
+        } else if(0==strcmp(argv[i], "--csv")) {
+            args.csv = true;
         } else if('-'!=argv[i][0]) {
-            // atoi used to turn "foo" into meter #0
-            char *end = 0;
-            errno = 0;
-            auto n = strtol(argv[i], &end, 10);
-            if(!isdigit((unsigned char)argv[i][0]) || 0!=*end || 0!=errno || 9999<n) {
+            long n = 0;
+            if(!parseCount(argv[i], 9999, n)) {
                 die(kExitUsage, "bad DEVICE_INDEX %s, expected 0, 1, 2... (see accuchek --help)", argv[i]);
             }
-            if(0<=deviceIndex) {
+            if(0<=args.deviceIndex) {
                 die(kExitUsage, "DEVICE_INDEX given twice");
             }
-            deviceIndex = int(n);
+            args.deviceIndex = int(n);
         } else {
             die(kExitUsage, "unknown or incomplete option %s (see accuchek --help)", argv[i]);
         }
     }
-    if(0!=replayPath && 0!=capturePath) {
+    if(0!=args.replayPath && 0!=args.capturePath) {
         die(kExitUsage, "--capture records a meter, it does not go with --replay");
     }
-    if(0!=replayPath && 0<=deviceIndex) {
+    if(0!=args.replayPath && 0<=args.deviceIndex) {
         die(kExitUsage, "DEVICE_INDEX selects a meter, it does not go with --replay");
     }
+    // a fake clock must never reach a real meter
+    if(0!=args.nowText && 0==args.replayPath) {
+        die(kExitUsage, "--now only goes with --replay");
+    }
+    if(0!=args.waitText) {
+        if(!parseCount(args.waitText, 3600, args.waitSeconds) || args.waitSeconds<1) {
+            die(kExitUsage, "bad --wait %s, expected seconds from 1 to 3600", args.waitText);
+        }
+        if(0!=args.replayPath) {
+            die(kExitUsage, "--wait waits for a meter, it does not go with --replay");
+        }
+    }
+    return "";
+}
 
-    if(0!=configPath) {
-        loadConfig(configPath);
+// everything but writing on stdout: returns what to write, throws Fatal on failure
+static std::string run(
+    int argc,
+    char *argv[]
+) {
+    Args args;
+    auto text = parseArgs(argc, argv, args);
+    if(!text.empty()) {
+        return text;
+    }
+
+    auto config = defaultConfig();
+    if(0!=args.configPath) {
+        std::string file;
+        if(false==readFile(args.configPath, file)) {
+            die(kExitUsage, "cannot read config file %s", args.configPath);
+        }
+        config = configWithFile(file);
     }
     // replaying a trace: the PC clock of the capture is unknown unless given
-    if(0==replayPath) {
-        g_options.pcClock = systemClock;
+    if(0==args.replayPath) {
+        args.options.pcClock = systemClock;
     }
-    if(0!=nowText) {
-        // a fake clock must never reach a real meter
-        if(0==replayPath) {
-            die(kExitUsage, "--now only goes with --replay");
-        }
-        struct tm t;
-        memset(&t, 0, sizeof(t));
-        int consumed = 0;
-        if(6!=sscanf(nowText, "%d/%d/%d %d:%d:%d%n", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec, &consumed) ||
-            0!=nowText[consumed]) {
-            die(kExitUsage, "bad --now %s, expected \"YYYY/MM/DD HH:MM:SS\"", nowText);
-        }
-        t.tm_year -= 1900;
-        t.tm_mon -= 1;
-        t.tm_isdst = -1;
-        auto asked = t;
-        auto now = mktime(&t);
-        // mktime normalizes 2026/13/45 into 2027/02/14 and shifts times in the
-        // spring forward gap: a date that does not come back unchanged is wrong
-        if(asked.tm_year!=t.tm_year || asked.tm_mon!=t.tm_mon || asked.tm_mday!=t.tm_mday ||
-            asked.tm_hour!=t.tm_hour || asked.tm_min!=t.tm_min || asked.tm_sec!=t.tm_sec) {
-            die(kExitUsage, "bad --now %s, no such local time", nowText);
-        }
-        g_options.pcClock = [now]() { return PcClock{now, true, true}; };
+    if(0!=args.nowText) {
+        auto now = parseNow(args.nowText);
+        args.options.pcClock = [now]() { return PcClock{now, true, true}; };
     }
-    if(listDevices) {
+    if(args.listDevices) {
         std::string list;
-        for(const auto &device : allowedDevices(g_config)) {
+        for(const auto &device : allowedDevices(config)) {
             list += device + "\n";
         }
         return list;
     }
 
-    // make some noise
-    LOG_NFO("starting");
-
-    if(0!=replayPath) {
-        replayTrace(replayPath);
-    } else {
-        // open libusb
-        UsbContext usb;
-
-        // find and talk to one accuchek device
-        findAndOperateAccuChek(usb.context, deviceIndex, capturePath);
+    // a bad archive is refused before the meter is read
+    Archive archive;
+    if(0!=args.mergePath) {
+        archive = loadArchive(args.mergePath);
     }
-    for(const auto &warning : countWarnings(g_report)) {
+
+    LOG_NFO("starting");
+    Download download;
+    if(0!=args.replayPath) {
+        replayTrace(args, download);
+    } else {
+        try {
+            downloadFromMeter(config, args, download);
+        } catch(const UsbError &e) {
+            die(e.code, "%s", e.what());
+        }
+    }
+    for(const auto &warning : countWarnings(download.report)) {
         fprintf(stderr, "accuchek: warning: %s\n", warning.c_str());
     }
-    return outputJson(g_report, g_samples);
+    if(0!=args.mergePath) {
+        mergeArchive(args.mergePath, archive, download);
+    }
+    if(args.csv) {
+        return outputCsv(download.samples);
+    }
+    return outputJson(download.report, download.samples);
 }
 
 // a full disk or a closed pipe must not end in exit code 0

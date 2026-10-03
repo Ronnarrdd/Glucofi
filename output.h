@@ -17,6 +17,11 @@
 
     std::string outputJson(const SessionReport &report, const std::vector<Sample> &samples);
 
+    // --csv: a header line, then one line per reading with the fields of the
+    // JSON readings (null and absent fields empty); values never hold a
+    // comma nor a quote, so nothing is quoted
+    std::string outputCsv(const std::vector<Sample> &samples);
+
     // one line per segment whose received count differs from the count the
     // meter announced: the download succeeded but may be incomplete
     std::vector<std::string> countWarnings(const SessionReport &report);

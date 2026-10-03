@@ -124,7 +124,7 @@ TEST(segment_samples_and_flags) {
     CHECK_EQ(segment.u1, 0x00070000u);
     CHECK_EQ(segment.u2, 2);
     CHECK_EQ(segment.samples.size(), 2u);
-    auto &a = segment.samples[0];
+    const auto &a = segment.samples[0];
     CHECK_EQ(a.year, 2021);
     CHECK_EQ(a.month, 3);
     CHECK_EQ(a.day, 29);
@@ -132,7 +132,7 @@ TEST(segment_samples_and_flags) {
     CHECK_EQ(a.minute, 12);
     CHECK_EQ(a.value, 133);
     CHECK_EQ(a.status, 0);
-    auto &b = segment.samples[1];
+    const auto &b = segment.samples[1];
     CHECK_EQ(b.year, 2026);
     CHECK_EQ(b.month, 12);
     CHECK_EQ(b.minute, 59);
@@ -174,10 +174,47 @@ TEST(epoch_around_dst_changes) {
 
 TEST(sample_json_format) {
     Sample s = {2021, 1, 15, 8, 0, 133, 0, true};
+    s.timeKey = 0x2021011508001700ull;
     CHECK_EQ(
         sampleJson(s, 0),
-        std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\":  7.388889, \"status\":0 }")
+        std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\": 7.4, \"status\":0, \"key\":\"2021011508001700\" }")
     );
+    // a reading of an old archive has no key: none is made up
+    s.hasTimeKey = false;
+    CHECK_EQ(
+        sampleJson(s, 0),
+        std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\": 7.4, \"status\":0 }")
+    );
+}
+
+// the id is a position: a meter that dropped its oldest reading shifts every
+// id, the key stays (raw time bytes, BCD: they read as the date)
+TEST(sample_key_is_the_raw_meter_time) {
+    Sample s = {2026, 10, 1, 20, 47, 104, 0, true};
+    s.timeKey = 0x2026100120471300ull;
+    CHECK_EQ(sampleKey(s), std::string("2026100120471300"));
+    s.timeKey = 0x00000000000000ABull;
+    CHECK_EQ(sampleKey(s), std::string("00000000000000AB"));
+    s.timeKey = ~0ull;
+    CHECK_EQ(sampleKey(s), std::string("FFFFFFFFFFFFFFFF"));
+    // unreadable dates keep their key: it is how they are told apart
+    s.validDate = false;
+    CHECK(std::string::npos!=sampleJson(s, 0).find("\"error\":\"invalid date\", \"key\":\"FFFFFFFFFFFFFFFF\" }"));
+}
+
+// mg/dL / 18 used to be printed with 6 decimals (5.777778); a meter set to
+// mmol/L shows one
+TEST(mmol_per_liter_has_one_decimal) {
+    CHECK_EQ(mmolPerLiter(104), 5.8);
+    CHECK_EQ(mmolPerLiter(99), 5.5);
+    CHECK_EQ(mmolPerLiter(9), 0.5);
+    CHECK_EQ(mmolPerLiter(601), 33.4);
+    CHECK_EQ(mmolPerLiter(70), 3.9);
+    CHECK_EQ(mmolPerLiter(180), 10.0);
+    Sample s = {2021, 1, 15, 8, 0, 104, 0, true};
+    CHECK(std::string::npos!=sampleJson(s, 0).find("\"mg/dL\":104, \"mmol/L\": 5.8, "));
+    s.value = 300;
+    CHECK(std::string::npos!=sampleJson(s, 0).find("\"mg/dL\":300, \"mmol/L\":16.7, "));
 }
 
 TEST(sample_json_high_reading) {
@@ -191,14 +228,14 @@ TEST(sample_json_low_reading) {
     Sample s = {2021, 1, 15, 8, 0, kValueLow, 0x0400, true};
     auto json = sampleJson(s, 3);
     CHECK(std::string::npos!=json.find("\"mg/dL\":  9"));
-    CHECK(std::string::npos!=json.find("\"status\":1024, \"range\":\"low\" }"));
+    CHECK(std::string::npos!=json.find("\"status\":1024, \"range\":\"low\", \"key\":"));
 }
 
 TEST(sample_json_keeps_flagged_status) {
     Sample s = {2021, 1, 15, 8, 0, 140, 0x0001, true};
     auto json = sampleJson(s, 3);
     CHECK(std::string::npos!=json.find("\"mg/dL\":140"));
-    CHECK(std::string::npos!=json.find("\"status\":1 }"));
+    CHECK(std::string::npos!=json.find("\"status\":1, \"key\":"));
     CHECK(std::string::npos==json.find("range"));
 }
 
@@ -437,9 +474,10 @@ TEST(meal_names) {
 TEST(sample_json_with_meal) {
     Sample s = {2021, 1, 15, 8, 0, 133, 0, true};
     s.meal = kMDC_CTXT_GLU_MEAL_FASTING;
+    s.timeKey = 0x2021011508001700ull;
     CHECK_EQ(
         sampleJson(s, 0),
-        std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\":  7.388889, \"status\":0, \"meal\":\"fasting\" }")
+        std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\": 7.4, \"status\":0, \"meal\":\"fasting\", \"key\":\"2021011508001700\" }")
     );
 }
 

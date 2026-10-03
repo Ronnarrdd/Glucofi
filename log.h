@@ -1,93 +1,29 @@
+/*
+
+    logs on stderr, never on stdout (stdout carries the JSON)
+
+    silent unless gQuiet is false (main sets it from ACCUCHEK_DBG); a log
+    call never fails, never exits and never touches anything but stderr
+
+ */
+
 #ifndef __LOG_H__
     #define __LOG_H__
 
-    // export LOG='*' to see debug messages
+    extern bool gQuiet;
 
-    #include <stdio.h>
-    #include <assert.h>
-    #include <stdlib.h>
+    // "accuchek[nfo] +0.012345 session.cpp:141: <message>\n" on stderr
+    void logMessage(const char *level, const char *file, int line, const char *format, ...)
+        __attribute__((format(printf, 4, 5)));
 
-    #define GCC_DIAG_STR(s)         #s
-    #define GCC_DIAG_DO_PRAGMA(x)   _Pragma (#x)
-    #define GCC_DIAG_JOINSTR(x,y)   GCC_DIAG_STR(x ## y)
-    #define GCC_DIAG_PRAGMA(x)      GCC_DIAG_DO_PRAGMA(GCC diagnostic x)
-    #define GCC_DIAG_PUSH(x)        GCC_DIAG_PRAGMA(push) GCC_DIAG_PRAGMA(ignored GCC_DIAG_JOINSTR(-W,x))
-    #define GCC_DIAG_POP()          GCC_DIAG_PRAGMA(pop)
+    #define LOG_AT(level, ...)                                      \
+        do {                                                        \
+            if(!gQuiet) {                                           \
+                logMessage((level), __FILE__, __LINE__, __VA_ARGS__); \
+            }                                                       \
+        } while(0)
 
-    struct Log {
-
-        enum Mode {
-            kDbg = 0,
-            kInfo,
-            kWarning,
-            kFatal,
-            kNbModes
-        };
-
-        static void msg(
-            Mode       mode,
-            const char *fileName,
-            const char *functionName,
-            int        lineNumber,
-            const char *format = 0,
-            ...
-        );
-
-        static void assrt(
-            const char *fileName,
-            const char *functionName,
-            int        lineNumber,
-            bool       bCondition,
-            const char *condition,
-            const char *format = 0,
-            ...
-        );
-
-        static int threadId();
-    };
-
-    #if defined(LOG_OFF)
-
-        #define LOG_MSG(x, ...)
-        #define LOG_ASSERT(x, ...)
-
-    #else
-
-        #define LOG_MSG(x, ...)     \
-            do {                    \
-                Log::msg(           \
-                    (x),            \
-                    __FILE__,       \
-                    __FUNCTION__,   \
-                    __LINE__,       \
-                    ##__VA_ARGS__   \
-                );                  \
-            } while(0)              \
-
-        #define LOG_ASSERT(x, ...)  \
-            do {                    \
-                Log::assrt(         \
-                    __FILE__,       \
-                    __FUNCTION__,   \
-                    __LINE__,       \
-                    (x),            \
-                    #x,             \
-                    ##__VA_ARGS__   \
-                );                  \
-            } while(0)              \
-
-    #endif
-
-    #define LOG_DBG(...) LOG_MSG(Log::kDbg,     ##__VA_ARGS__)
-    #define LOG_NFO(...) LOG_MSG(Log::kInfo,    ##__VA_ARGS__)
-    #define LOG_WRN(...) LOG_MSG(Log::kWarning, ##__VA_ARGS__)
-
-    #define LOG_FTL(x, ...) LOG_ASSERT(!(x), ##__VA_ARGS__)
-    #define LOG_IMPLY(x, y, ...) LOG_ASSERT(((x)==false) || (y), ##__VA_ARGS__)
-    #define LOG_EQUIV(x, y, ...) {          \
-        LOG_IMPLY((x), (y), ##__VA_ARGS__); \
-        LOG_IMPLY((y), (x), ##__VA_ARGS__); \
-    }                                       \
+    #define LOG_NFO(...) LOG_AT("nfo", __VA_ARGS__)
+    #define LOG_WRN(...) LOG_AT("wrn", __VA_ARGS__)
 
 #endif // __LOG_H__
-

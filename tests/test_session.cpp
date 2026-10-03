@@ -2,6 +2,8 @@
 #include "sim.h"
 #include <session.h>
 #include <trace.h>
+#include <usb.h>
+#include <algorithm>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -524,8 +526,10 @@ static void checkFixture(
     if(getenv("ACCUCHEK_UPDATE_FIXTURES")) {
         auto fp = fopen(path, "w");
         CHECK(0!=fp);
-        fputs(expected.c_str(), fp);
-        fclose(fp);
+        if(fp) {
+            fputs(expected.c_str(), fp);
+            fclose(fp);
+        }
     }
     std::string text;
     CHECK(readFile(path, text));
@@ -622,6 +626,10 @@ TEST(cli_ignores_config_txt_in_current_directory) {
     CHECK(0!=mkdtemp(dir));
     auto cfg = std::string(dir) + "/config.txt";
     auto fp = fopen(cfg.c_str(), "w");
+    CHECK(0!=fp);
+    if(!fp) {
+        return;
+    }
     fputs("vendor_0x173a_device_0x21d5 0\n", fp);
     fclose(fp);
     auto r = runBinary("--known-devices", dir);
@@ -655,6 +663,8 @@ TEST(cli_outputs_json_object) {
         "  \"readings\": [\n    { \"id\":     0,";
     CHECK_EQ(r.out.substr(0, head.size()), head);
     CHECK(std::string::npos!=r.out.find("\"timestamp\":\"2021/01/16 07:45\", \"mg/dL\": 98"));
+    // the key carries the seconds the timestamp drops
+    CHECK(std::string::npos!=r.out.find("\"key\":\"2021011607450000\" }"));
     CHECK(std::string::npos!=r.out.find("\"id\":     2"));
     CHECK_EQ(r.out.substr(r.out.size() - 9), std::string(" }\n  ]\n}\n"));
 }
@@ -663,10 +673,10 @@ TEST(cli_outputs_meal_markers) {
     auto r = runCli(sim::sessionTrace(mealSession()));
     CHECK_EQ(r.code, 0);
     CHECK(std::string::npos!=r.out.find("  \"glucose\": {\"announced\":4, \"received\":4},\n  \"meal\": {\"announced\":4, \"received\":4, \"unmatched\":1},\n"));
-    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"fasting\" }"));
-    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"after_meal\" }"));
-    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"bedtime\" }"));
-    CHECK(std::string::npos!=r.out.find("\"mg/dL\": 98, \"mmol/L\":  5.444444, \"status\":0 }"));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"fasting\", \"key\":\""));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"after_meal\", \"key\":\""));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"bedtime\", \"key\":\""));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\": 98, \"mmol/L\": 5.4, \"status\":0, \"key\":\""));
 }
 
 TEST(cli_sets_the_meter_clock) {
@@ -743,6 +753,13 @@ TEST(cli_rejects_ambiguous_arguments) {
         {"--config a --config b", "--config given twice"},
         {"--replay a --replay b", "--replay given twice"},
         {"--capture a --capture b", "--capture given twice"},
+        {"--merge a --merge b", "--merge given twice"},
+        {"--wait 1 --wait 2", "--wait given twice"},
+        {"--wait 0", "bad --wait 0, expected seconds from 1 to 3600"},
+        {"--wait 3601", "bad --wait 3601, expected seconds from 1 to 3600"},
+        {"--wait 10s", "bad --wait 10s, expected seconds from 1 to 3600"},
+        {"--wait -5", "bad --wait -5, expected seconds from 1 to 3600"},
+        {"--replay a --wait 5", "--wait waits for a meter, it does not go with --replay"},
         {"--replay a --capture b", "--capture records a meter, it does not go with --replay"},
         {"1 --replay a", "DEVICE_INDEX selects a meter, it does not go with --replay"},
     };
@@ -757,9 +774,9 @@ TEST(cli_rejects_ambiguous_arguments) {
 TEST(cli_outputs_flagged_samples) {
     auto r = runCli(sim::sessionTrace(kFlags));
     CHECK_EQ(r.code, 0);
-    CHECK(std::string::npos!=r.out.find("\"mg/dL\":601, \"mmol/L\": 33.388889, \"status\":0, \"range\":\"high\""));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\":601, \"mmol/L\":33.4, \"status\":0, \"range\":\"high\""));
     CHECK(std::string::npos!=r.out.find("\"range\":\"low\""));
-    CHECK(std::string::npos!=r.out.find("\"mg/dL\":140, \"mmol/L\":  7.777778, \"status\":1 }"));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\":140, \"mmol/L\": 7.8, \"status\":1, \"key\":\""));
 }
 
 // failures used to leave "[" plus some samples on stdout and exit 1, whatever the cause
@@ -858,16 +875,41 @@ TEST(cli_help_and_version) {
     }
 }
 
+// "2.1.0" or "2.1.0-3-gabcdef0-dirty": the X.Y.Z at the start of text
+static bool releaseOf(
+    const std::string &text,
+    std::vector<int> &release
+) {
+    int x, y, z, length = 0;
+    if(3!=sscanf(text.c_str(), "%d.%d.%d%n", &x, &y, &z, &length)) {
+        return false;
+    }
+    release = {x, y, z};
+    return '\0'==text[length] || '-'==text[length] || '\n'==text[length];
+}
+
+TEST(release_of_a_version) {
+    std::vector<int> r;
+    CHECK(releaseOf("2.10.0-3-gabcdef0-dirty", r));
+    CHECK(std::vector<int>({2, 10, 0})==r);
+    CHECK(!releaseOf("2.1", r));
+    CHECK(!releaseOf("2.1.0rc1", r));
+}
+
 // git describe gives "2.1.0", "2.1.0-3-gabcdef0" or "2.1.0-dirty" once v2.1.0
-// is tagged: tagging a release without bumping VERSION fails here
-TEST(cli_version_starts_with_the_version_file) {
+// is tagged, the VERSION file elsewhere. Tagging a release without bumping
+// VERSION fails here; bumping VERSION before tagging is the release commit.
+TEST(cli_version_is_not_ahead_of_the_version_file) {
     std::string version;
     CHECK(readFile("VERSION", version));
-    CHECK(!version.empty() && '\n'==version.back());
-    version.pop_back();
+    std::vector<int> file, built;
+    CHECK(releaseOf(version, file));
+    CHECK_EQ(version.back(), '\n');
     auto v = runBinary("--version");
     CHECK_EQ(v.code, kExitOk);
-    CHECK_EQ(v.out.substr(0, 9 + version.size()), "accuchek " + version);
+    CHECK_EQ(v.out.substr(0, 9), std::string("accuchek "));
+    CHECK(releaseOf(v.out.substr(9), built));
+    CHECK(built<=file);
     CHECK_EQ(v.out.back(), '\n');
 }
 
@@ -882,7 +924,6 @@ TEST(udev_rule_matches_known_devices) {
         at += strlen(key);
         ids += rule.substr(at, rule.find('"', at) - at) + "\n";
     }
-    std::string expected;
     std::string products;
     auto known = runBinary("--known-devices").out;
     for(size_t at=0; at<known.size(); at=known.find('\n', at) + 1) {
@@ -900,7 +941,178 @@ TEST(cli_debug_logs_stay_off_stdout) {
     CHECK_EQ(debug.code, kExitOk);
     CHECK_EQ(debug.out, quiet.out);
     CHECK(std::string::npos!=debug.err.find("BUFFER START"));
+    CHECK(0==debug.err.find("accuchek[nfo] +"));
     CHECK_EQ(quiet.err, std::string(""));
+}
+
+// the old logger compiled $LOG as a regex: LOG='[' ended in std::regex_error, exit 134
+TEST(cli_debug_ignores_log_variable) {
+    auto r = runCli(sim::sessionTrace(kTwoSegments), "", "env ACCUCHEK_DBG=1 LOG='['");
+    CHECK_EQ(r.code, kExitOk);
+    CHECK(std::string::npos==r.err.find("regex"));
+}
+
+// text without every ', "key":"..."' of the readings: an output of accuchek before 2.2
+static std::string withoutKeys(
+    std::string text
+) {
+    const std::string marker = ", \"key\":\"";
+    for(auto at = text.find(marker); std::string::npos!=at; at = text.find(marker, at)) {
+        text.erase(at, marker.size() + 16 + 1);
+    }
+    return text;
+}
+
+static std::string replaceAll(
+    std::string text,
+    const std::string &from,
+    const std::string &to
+) {
+    for(auto at = text.find(from); std::string::npos!=at; at = text.find(from, at + to.size())) {
+        text.replace(at, from.size(), to);
+    }
+    return text;
+}
+
+TEST(cli_merge_with_itself_changes_nothing) {
+    auto trace = sim::sessionTrace(mealSession());
+    auto plain = runCli(trace);
+    CHECK_EQ(plain.code, kExitOk);
+    auto archive = writeTemp(plain.out);
+    auto merged = runCli(trace, "--merge " + archive);
+    CHECK_EQ(merged.code, kExitOk);
+    CHECK_EQ(merged.err, std::string(""));
+    CHECK_EQ(merged.out, plain.out);
+    unlink(archive.c_str());
+}
+
+// a full meter drops its oldest reading for each new one: the archive keeps it
+TEST(cli_merge_keeps_the_readings_the_meter_dropped) {
+    sim::Session before;
+    before.glucose = kTwoSegments;
+    sim::Session after;
+    after.glucose = {
+        {{2021, 1, 15, 12, 30, 192, 0}},
+        {{2021, 1, 16, 7, 45, 98, 0}, {2021, 1, 17, 9, 15, 150, 0}},
+    };
+    auto archive = writeTemp(runCli(sim::sessionTrace(before)).out);
+    auto r = runCli(sim::sessionTrace(after), "--merge " + archive);
+    CHECK_EQ(r.code, kExitOk);
+    // the counters describe this download, the readings the whole history
+    CHECK(std::string::npos!=r.out.find("  \"glucose\": {\"announced\":3, \"received\":3},\n"));
+    for(const char *t : {"2021/01/15 08:00", "2021/01/15 12:30", "2021/01/16 07:45", "2021/01/17 09:15"}) {
+        CHECK(std::string::npos!=r.out.find(t));
+    }
+    // the archive reading first, then the download in meter order
+    CHECK(r.out.find("2021/01/15 08:00")<r.out.find("2021/01/15 12:30"));
+    CHECK(r.out.find("2021/01/16 07:45")<r.out.find("2021/01/17 09:15"));
+    CHECK(std::string::npos!=r.out.find("{ \"id\":     3, "));
+    CHECK(std::string::npos==r.out.find("{ \"id\":     4, "));
+    // the next download merges into this output the same way
+    auto next = writeTemp(r.out);
+    CHECK_EQ(runCli(sim::sessionTrace(after), "--merge " + next).out, r.out);
+    unlink(archive.c_str());
+    unlink(next.c_str());
+}
+
+// readings archived before 2.2 have no key: matched on minute, value and status
+TEST(cli_merge_archive_without_keys) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto plain = runCli(trace);
+    auto old = withoutKeys(plain.out);
+    CHECK(std::string::npos==old.find("\"key\""));
+    auto archive = writeTemp(old);
+    auto r = runCli(trace, "--merge " + archive);
+    CHECK_EQ(r.code, kExitOk);
+    CHECK_EQ(r.out, plain.out);
+    unlink(archive.c_str());
+}
+
+TEST(cli_merge_refuses_another_meter) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto other = replaceAll(runCli(trace).out, "92500000042", "92599999999");
+    auto archive = writeTemp(other);
+    auto r = runCli(trace, "--merge " + archive);
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK_EQ(r.err, "accuchek: archive " + archive + " holds the readings of meter 92599999999, this is meter 92500000042: keep one archive per meter\n");
+    unlink(archive.c_str());
+}
+
+TEST(cli_merge_refuses_a_bad_archive) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto bad = writeTemp("{\"format\": 2, \"readings\": [{\"timestamp\":\"2026/10/01 08:00\"}]}");
+    auto r = runCli(trace, "--merge " + bad);
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK_EQ(r.err, "accuchek: bad archive " + bad + ": reading 0: no \"mg/dL\"\n");
+    unlink(bad.c_str());
+
+    auto missing = runCli(trace, "--merge /nonexistent/archive.json");
+    CHECK_EQ(missing.code, kExitUsage);
+    CHECK_EQ(missing.err, std::string("accuchek: cannot read archive /nonexistent/archive.json\n"));
+}
+
+// "--merge a.json > a.json": the shell empties a.json before accuchek starts
+TEST(cli_merge_into_the_archive_itself_is_refused) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto archive = writeTemp(runCli(trace).out);
+    auto r = runCli(trace, "--merge " + archive + " >" + archive);
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK(0==r.err.find("accuchek: stdout is the archive " + archive + " itself, emptied by the shell"));
+    unlink(archive.c_str());
+}
+
+TEST(cli_csv_output) {
+    auto r = runCli(sim::sessionTrace(kFlags), "--csv");
+    CHECK_EQ(r.code, kExitOk);
+    CHECK_EQ(r.err, std::string(""));
+    CHECK_EQ(
+        r.out,
+        std::string(
+            "id,key,epoch,timestamp,mg/dL,mmol/L,status,range,meal,error\n"
+            "0,2026090108000000,1788242400,2026/09/01 08:00,120,6.7,0,,,\n"
+            "1,2026090112000000,1788256800,2026/09/01 12:00,601,33.4,0,high,,\n"
+            "2,2026090203150000,1788311700,2026/09/02 03:15,9,0.5,0,low,,\n"
+            "3,2026090208000000,1788328800,2026/09/02 08:00,140,7.8,1,,,\n"
+        )
+    );
+    auto meals = runCli(sim::sessionTrace(mealSession()), "--csv");
+    CHECK(std::string::npos!=meals.out.find(",0,,fasting,\n"));
+    auto empty = runCli(sim::sessionTrace(kNoSegments), "--csv");
+    CHECK_EQ(empty.out, std::string("id,key,epoch,timestamp,mg/dL,mmol/L,status,range,meal,error\n"));
+}
+
+// every line has the 10 fields of the header, whatever the reading
+TEST(cli_csv_with_merge_keeps_ten_fields) {
+    auto trace = sim::sessionTrace(mealSession());
+    auto archive = writeTemp(withoutKeys(runCli(sim::sessionTrace(kFlags)).out));
+    auto r = runCli(trace, "--csv --merge " + archive);
+    CHECK_EQ(r.code, kExitOk);
+    size_t lines = 0;
+    for(size_t at=0; at<r.out.size(); at=r.out.find('\n', at) + 1) {
+        auto line = r.out.substr(at, r.out.find('\n', at) - at);
+        CHECK_EQ(std::count(line.begin(), line.end(), ','), 9);
+        ++lines;
+    }
+    // header, 4 archive readings of another day without key, 4 downloaded
+    CHECK_EQ(lines, 9u);
+    CHECK(std::string::npos!=r.out.find("\n0,,1788242400,2026/09/01 08:00,120,6.7,0,,,\n"));
+    unlink(archive.c_str());
+}
+
+// without --wait a meter plugged in a second too late was "no meter found";
+// #99 never exists, so a plugged meter is looked at but never read
+TEST(cli_wait_gives_up_after_its_delay) {
+    auto start = monotonicMs();
+    auto r = runBinary("99 --wait 1");
+    auto elapsed = monotonicMs() - start;
+    CHECK(kExitNoDevice==r.code || kExitAccessDenied==r.code);
+    if(kExitNoDevice==r.code) {
+        CHECK(std::string::npos!=r.err.find(" after waiting 1 s\n"));
+    }
+    CHECK(900<=elapsed && elapsed<5000);
+    CHECK_EQ(r.out, std::string(""));
 }
 
 // accuchek used to refuse to run unless root; USB access now comes from udev.

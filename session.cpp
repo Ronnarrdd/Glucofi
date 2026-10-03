@@ -6,7 +6,6 @@
 #include <string.h>
 #include <sys/timex.h>
 
-extern bool gQuiet;
 
 namespace accuchek {
 
