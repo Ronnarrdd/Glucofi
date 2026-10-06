@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from contracts import AccuchekExit, ClockAction, Meal, MeterClock, MeterInfo, Reading, SegmentCount
+from contracts import AccuchekExit, ClockAction, Meal, MeterClock, MeterInfo, Reading, SegmentCount, count_fr
 
 log = logging.getLogger("glucofi.device")
 
@@ -123,11 +123,18 @@ def fmt_offset(seconds: int) -> str:
 def output_warnings(result: ParseResult | FetchResult) -> tuple[str, ...]:
     """Avertissements à montrer après un import : lecture incomplète, marqueurs orphelins, horloge."""
     warnings: list[str] = []
-    for count, what, received in ((result.glucose, "mesures", "reçues"), (result.meal, "marqueurs repas", "reçus")):
+    for count, what, received in (
+        (result.glucose, ("mesure", "mesures"), ("reçue", "reçues")),
+        (result.meal, ("marqueur repas", "marqueurs repas"), ("reçu", "reçus")),
+    ):
         if count is not None and not count.complete:
-            warnings.append(f"Le lecteur annonce {count.announced} {what}, {count.received} {received}.")
+            warnings.append(f"Le lecteur annonce {count_fr(count.announced, *what)}, {count_fr(count.received, *received)}.")
     if result.meals_unmatched:
-        warnings.append(f"{result.meals_unmatched} marqueur(s) repas sans mesure à la même seconde, ignoré(s).")
+        warnings.append(count_fr(
+            result.meals_unmatched,
+            "marqueur repas sans mesure à la même seconde, ignoré.",
+            "marqueurs repas sans mesure à la même seconde, ignorés.",
+        ))
     clock = result.clock
     if clock is None:
         return tuple(warnings)

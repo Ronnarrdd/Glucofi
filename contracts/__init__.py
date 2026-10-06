@@ -36,6 +36,7 @@ from contracts.models import (
     ReferenceReading,
     SegmentCount,
     Titration,
+    count_fr,
     local_epoch,
 )
 
@@ -77,5 +78,6 @@ __all__ = [
     "ReferenceReading",
     "SegmentCount",
     "Titration",
+    "count_fr",
     "local_epoch",
 ]

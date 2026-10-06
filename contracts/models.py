@@ -255,6 +255,11 @@ DOSE_TARGET_LABELS_FR = {DoseTarget.EVENING: "Soir", DoseTarget.MORNING: "Matin"
 REFERENCE_LABELS_FR = {DoseTarget.EVENING: "matin", DoseTarget.MORNING: "soir"}
 
 
+def count_fr(n: int, singular: str, plural: str) -> str:
+    """« 1 glycémie écartée », « 3 glycémies écartées » : accord au nombre réel, sans « (s) »."""
+    return f"{n} {singular if n == 1 else plural}"
+
+
 @dataclass(frozen=True)
 class DoseChange:
     """Dose validée, en vigueur à partir de `effective`."""

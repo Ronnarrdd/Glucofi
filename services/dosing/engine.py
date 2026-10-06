@@ -32,6 +32,7 @@ from datetime import date, datetime, timedelta
 from typing import Sequence
 
 from contracts import (
+    count_fr,
     EVENING_ALLOWED_MEALS,
     EVENING_FIRST_CHOICE,
     MG_DL_HIGH,
@@ -86,11 +87,6 @@ def fmt_excluded(reading: Reading) -> str:
     """Mesure écartée avec son motif, telle qu'enregistrée dans DoseChange.excluded."""
     motive = reading.note.summary if reading.note is not None else ""
     return f"{fmt_reading(reading)} ({motive})" if motive else fmt_reading(reading)
-
-
-def count_fr(n: int, singular: str, plural: str) -> str:
-    """« 1 glycémie écartée », « 3 glycémies écartées » : accord au nombre réel, sans « (s) »."""
-    return f"{n} {singular if n == 1 else plural}"
 
 
 def _mg(g_l: float) -> int:
@@ -297,7 +293,7 @@ def _adjust(
     streak = _high_streak(references, _mg(base.above_g_l))
     if streak:
         return keep(
-            f"Glycémie du {ref} haute depuis {len(streak)} jour(s) consécutif(s) sur {base.days} "
+            f"Glycémie du {ref} haute depuis {count_fr(len(streak), 'jour', 'jours consécutifs')} sur {base.days} "
             "nécessaires : dose inchangée pour l'instant.",
             tuple(m.reading for m in streak),
         )

@@ -69,7 +69,7 @@ class HighTierTest(unittest.TestCase):
     def test_partial_base_streak_keeps_the_dose(self):
         e = run(days([160, 205], "08:00"), TIERED).evening
         self.assertEqual((e.proposed_ui, e.rule), (6, DoseRule.KEEP))
-        self.assertIn("2 jour(s) consécutif(s) sur 3", e.reason)
+        self.assertIn("2 jours consécutifs sur 3", e.reason)
 
     def test_without_tiers_behaviour_is_unchanged(self):
         self.assertEqual(run(days([210, 220], "08:00"), BASE).evening.rule, DoseRule.KEEP)

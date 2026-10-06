@@ -154,7 +154,8 @@ class TextsTest(unittest.TestCase):
         busy = replace(quiet, readings_added=12, notes_added=1, doses_added=2, protocol_versions_added=1, protocol_changed=True)
         self.assertEqual(
             merge_message(busy),
-            "Fusion de tablette.db : 12 mesures, 1 note, 2 doses validées, 1 version du protocole ajouté(es) ; protocole mis à jour.",
+            "Fusion de tablette.db : 12 mesures ajoutées, 1 note ajoutée, 2 doses validées ajoutées, "
+            "1 version du protocole ajoutée ; protocole mis à jour.",
         )
 
 

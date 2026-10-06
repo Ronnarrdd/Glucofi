@@ -18,6 +18,7 @@ from app.widgets import clear as _clear
 from app.widgets import page as _page
 from app.widgets import toggle_group as _toggle_group
 from contracts import (
+    count_fr,
     DOSE_TARGET_LABELS_FR,
     MEAL_LABELS_FR,
     REFERENCE_LABELS_FR,
@@ -430,7 +431,7 @@ class MainWindow(Adw.ApplicationWindow):
         last = self.state.last_import()
         info.add(Adw.ActionRow(
             title="Dernière récupération",
-            subtitle=(f"{last.at:%d/%m/%Y à %H:%M} · {last.added} nouvelle(s) sur {last.received}" if last else "Jamais : branchez le lecteur puis cliquez sur Récupérer"),
+            subtitle=(f"{last.at:%d/%m/%Y à %H:%M} · {count_fr(last.added, 'nouvelle', 'nouvelles')} sur {last.received}" if last else "Jamais : branchez le lecteur puis cliquez sur Récupérer"),
         ))
         info.add(Adw.ActionRow(
             title="Mesures enregistrées",

@@ -111,8 +111,8 @@ class PdfTest(unittest.TestCase):
             text = subprocess.run(["pdftotext", str(out), "-"], capture_output=True, text=True, check=True).stdout
         flat = " ".join(text.split())
         for shown in (
-            "raclette & <vin>", "Écartées", "01/09/2026 08:00 : 1,90 g/L", "2 mesure(s) avec une note : Repas copieux 1, "
-            "Mesure douteuse 1, texte libre 1.", "1 glycémie(s) du matin écartée(s)", "écartée", "comptée", "retenue",
+            "raclette & <vin>", "Écartées", "01/09/2026 08:00 : 1,90 g/L", "2 mesures avec une note : Repas copieux 1, "
+            "Mesure douteuse 1, texte libre 1.", "1 glycémie du matin écartée", "écartée", "comptée", "retenue",
         ):
             self.assertIn(shown, flat)
 
@@ -149,7 +149,7 @@ class PdfTest(unittest.TestCase):
         for shown in (
             "Proposition : passer la dose du matin à 9 UI", "Proposition : dose du soir inchangée",
             "Dose du matin, selon la glycémie du soir (17:00-21:59)", "Historique du protocole", "03/09/2026 · Dr Test",
-            "Ajustement de la dose du matin : aucun → automatique", "1 glycémie(s) du soir écartée(s)",
+            "Ajustement de la dose du matin : aucun → automatique", "1 glycémie du soir écartée",
         ):
             self.assertIn(shown, flat)
 
@@ -177,8 +177,8 @@ class NotesSummaryTest(unittest.TestCase):
         ]
         self.assertEqual(
             notes_summary(readings, self.SETTINGS),
-            "2 mesure(s) avec une note : Malade 2, Alcool 1, texte libre 1. "
-            "1 glycémie(s) du matin écartée(s) de l'ajustement de la dose.",
+            "2 mesures avec une note : Malade 2, Alcool 1, texte libre 1. "
+            "1 glycémie du matin écartée de l'ajustement de la dose.",
         )
 
     def test_morning_status(self):

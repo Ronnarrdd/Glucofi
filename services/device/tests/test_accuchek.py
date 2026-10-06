@@ -103,8 +103,8 @@ class Format2Test(unittest.TestCase):
             result.warnings,
             (
                 "Le lecteur annonce 3 mesures, 2 reçues.",
-                "Le lecteur annonce 2 marqueurs repas, 1 reçus.",
-                "1 marqueur(s) repas sans mesure à la même seconde, ignoré(s).",
+                "Le lecteur annonce 2 marqueurs repas, 1 reçu.",
+                "1 marqueur repas sans mesure à la même seconde, ignoré.",
             ),
         )
 

@@ -30,6 +30,7 @@ from contracts import (
     ProtocolChange,
     Reading,
     ReadingNote,
+    count_fr,
 )
 from services.device import FetchResult, fmt_offset, parse_file
 from services.dosing import apply_adjustment, can_exclude, fmt_g_l, propose, reference_target
@@ -44,11 +45,14 @@ class StaleProposal(Exception):
 
 def import_message(summary: ImportSummary) -> str:
     """Toast après un import : nouvelles mesures, ignorées, marqueurs ajoutés, remise à l'heure."""
-    message = f"{summary.added} nouvelle(s) mesure(s) sur {summary.received} lue(s)"
+    message = (
+        f"{count_fr(summary.added, 'nouvelle mesure', 'nouvelles mesures')} "
+        f"sur {count_fr(summary.received, 'lue', 'lues')}"
+    )
     if summary.rejected:
-        message += f", {summary.rejected} ignorée(s)"
+        message += f", {count_fr(summary.rejected, 'ignorée', 'ignorées')}"
     if summary.markers_added:
-        message += f", {summary.markers_added} marqueur(s) repas ajouté(s)"
+        message += f", {count_fr(summary.markers_added, 'marqueur repas ajouté', 'marqueurs repas ajoutés')}"
     if summary.clock_action == ClockAction.SET and summary.clock_offset_s is not None:
         message += f", lecteur remis à l'heure ({fmt_offset(summary.clock_offset_s)} corrigée)"
     return message
@@ -110,17 +114,18 @@ def merge_message(summary: MergeSummary) -> str:
     """Résultat d'une fusion, en une phrase (toast, bandeau) ; les alertes sont affichées à part."""
     if not summary.changed:
         return f"Rien de nouveau dans {summary.source} : les deux bases étaient déjà à jour."
-    parts = []
-    for count, one, many in (
-        (summary.readings_added, "mesure", "mesures"),
-        (summary.markers_added, "marqueur repas", "marqueurs repas"),
-        (summary.notes_added + summary.notes_updated, "note", "notes"),
-        (summary.doses_added, "dose validée", "doses validées"),
-        (summary.protocol_versions_added, "version du protocole", "versions du protocole"),
-    ):
-        if count:
-            parts.append(f"{count} {one if count == 1 else many}")
-    text = f"Fusion de {summary.source} : " + (", ".join(parts) if parts else "lectures du lecteur") + " ajouté(es)"
+    parts = [
+        count_fr(count, one, many)
+        for count, one, many in (
+            (summary.readings_added, "mesure ajoutée", "mesures ajoutées"),
+            (summary.markers_added, "marqueur repas ajouté", "marqueurs repas ajoutés"),
+            (summary.notes_added + summary.notes_updated, "note ajoutée", "notes ajoutées"),
+            (summary.doses_added, "dose validée ajoutée", "doses validées ajoutées"),
+            (summary.protocol_versions_added, "version du protocole ajoutée", "versions du protocole ajoutées"),
+        )
+        if count
+    ]
+    text = f"Fusion de {summary.source} : " + (", ".join(parts) if parts else "lectures du lecteur ajoutées")
     if summary.protocol_changed:
         text += " ; protocole mis à jour"
     return text + "."

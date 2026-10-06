@@ -141,7 +141,7 @@ class IncreaseRuleTest(unittest.TestCase):
     def test_two_high_days_not_enough(self):
         p = run(mornings([120, 170, 180]))
         self.assertEqual(p.rule, DoseRule.KEEP)
-        self.assertIn("2 jour(s)", p.reason)
+        self.assertIn("2 jours consécutifs", p.reason)
 
     def test_missing_day_breaks_streak(self):
         readings = [r("2026-09-02 08:00", 200), r("2026-09-04 08:00", 200), r("2026-09-05 08:00", 200)]

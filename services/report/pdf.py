@@ -25,6 +25,7 @@ from reportlab.platypus import (
 )
 
 from contracts import (
+    count_fr,
     MEAL_LABELS_FR,
     NOTE_TAG_LABELS_FR,
     RULE_LABELS_FR,
@@ -153,11 +154,11 @@ def notes_summary(readings: Sequence[Reading], settings: DosingSettings) -> str:
         return ""
     counts = [(NOTE_TAG_LABELS_FR[tag], sum(tag in r.note.tags for r in noted)) for tag in NoteTag]
     counts.append(("texte libre", sum(bool(r.note.text) for r in noted)))
-    text = f"{len(noted)} mesure(s) avec une note : " + ", ".join(f"{name} {n}" for name, n in counts if n) + "."
+    text = f"{count_fr(len(noted), 'mesure', 'mesures')} avec une note : " + ", ".join(f"{name} {n}" for name, n in counts if n) + "."
     for target, ref in ((DoseTarget.EVENING, "matin"), (DoseTarget.MORNING, "soir")):
         excluded = sum(excluded_from_dosing(r, settings) and reference_target(r, settings) is target for r in noted)
         if excluded:
-            text += f" {excluded} glycémie(s) du {ref} écartée(s) de l'ajustement de la dose."
+            text += f" {count_fr(excluded, f'glycémie du {ref} écartée', f'glycémies du {ref} écartées')} de l'ajustement de la dose."
     return text
 
 

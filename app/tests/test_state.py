@@ -197,10 +197,11 @@ def summary(**kw) -> ImportSummary:
 
 class TextsTest(unittest.TestCase):
     def test_import_message(self):
-        self.assertEqual(import_message(summary()), "3 nouvelle(s) mesure(s) sur 638 lue(s)")
+        self.assertEqual(import_message(summary()), "3 nouvelles mesures sur 638 lues")
+        self.assertEqual(import_message(summary(added=1, received=1)), "1 nouvelle mesure sur 1 lue")
         self.assertEqual(
             import_message(summary(rejected=1, markers_added=576, clock_action=ClockAction.SET, clock_offset_s=1446)),
-            "3 nouvelle(s) mesure(s) sur 638 lue(s), 1 ignorée(s), 576 marqueur(s) repas ajouté(s), "
+            "3 nouvelles mesures sur 638 lues, 1 ignorée, 576 marqueurs repas ajoutés, "
             "lecteur remis à l'heure (24 min d'avance corrigée)",
         )
         self.assertNotIn("heure", import_message(summary(clock_action=ClockAction.WITHIN_TOLERANCE, clock_offset_s=7)))
