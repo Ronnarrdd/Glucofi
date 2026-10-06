@@ -18,7 +18,7 @@ from typing import Sequence
 
 from contracts import MEAL_LABELS_FR, DosingSettings, MeterInfo, Reading
 from services.charts import PERIODS, compute_stats, period_of
-from services.dosing import excluded_from_dosing, exclusion_refused, fmt_g_l, fmt_mg_dl, morning_readings
+from services.dosing import evening_readings, excluded_from_dosing, exclusion_refused, fmt_g_l, fmt_mg_dl, morning_readings
 
 WEEKDAYS_FR = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 MONTHS_FR = (
@@ -54,6 +54,8 @@ LEVEL_CSS = {"low": "error", "in": "success", "high": "warning"}
 LEVEL_ICONS = {"low": "go-down-symbolic", "in": None, "high": "go-up-symbolic"}
 RETAINED_ICON = "daytime-sunrise-symbolic"
 RETAINED_TOOLTIP = "Glycémie du matin retenue pour l'ajustement de la dose du soir"
+EVENING_RETAINED_ICON = "daytime-sunset-symbolic"
+EVENING_RETAINED_TOOLTIP = "Glycémie du soir retenue pour l'ajustement de la dose du matin"
 EXCLUDED_ICON = "action-unavailable-symbolic"
 EXCLUDED_TOOLTIP = "Écartée de l'ajustement de la dose par une note"
 REFUSED_TOOLTIP = "Marquée à écarter, mais sous le seuil bas : une glycémie basse compte toujours pour l'ajustement"
@@ -84,6 +86,8 @@ class MeasureLine:
     excluded: bool = False
     exclusion_refused: bool = False
     reading: Reading | None = field(default=None, compare=False)
+    retained_icon: str = RETAINED_ICON
+    retained_tooltip: str = RETAINED_TOOLTIP
 
     @property
     def title(self) -> str:
@@ -181,6 +185,10 @@ def measure_view(
     today = today or date.today()
     by_period = [r for r in readings if period == "all" or period_of(r, settings) == period]
     retained = {item.day: item.reading for item in morning_readings(by_period, settings)}
+    evenings = (
+        {item.day: item.reading for item in evening_readings(by_period, settings)}
+        if settings.morning_titration is not None else {}
+    )
     shown = [r for r in by_period if _matches_meal(r, meal)]
     names = _meter_names(meters)
     by_day: dict[date, list[Reading]] = {}
@@ -199,7 +207,7 @@ def measure_view(
             morning=None if morning is None else MorningChip(
                 fmt_g_l(morning.mg_dl), level_of(morning, settings), level_label(level_of(morning, settings), settings),
             ),
-            lines=tuple(_line(r, settings, names, r == morning) for r in group),
+            lines=tuple(_line(r, settings, names, r == morning, r == evenings.get(day)) for r in group),
         ))
     return MeasureView(_summary(shown, settings), tuple(days))
 
@@ -256,7 +264,9 @@ def range_spans(counts: Sequence[int], total: int = 100) -> tuple[int, ...]:
     return tuple(spans)
 
 
-def _line(reading: Reading, settings: DosingSettings, names: dict[str, str] | None, retained: bool) -> MeasureLine:
+def _line(
+    reading: Reading, settings: DosingSettings, names: dict[str, str] | None, retained: bool, evening: bool = False,
+) -> MeasureLine:
     level = level_of(reading, settings)
     return MeasureLine(
         time=f"{reading.device_time:%H:%M}",
@@ -266,12 +276,14 @@ def _line(reading: Reading, settings: DosingSettings, names: dict[str, str] | No
         mg=fmt_mg_dl(reading.mg_dl),
         level=level,
         level_label=level_label(level, settings),
-        retained=retained,
+        retained=retained or evening,
         meter=None if names is None else names.get(reading.meter_serial or "", "Lecteur inconnu"),
         note=reading.note.summary or None if reading.note is not None else None,
         excluded=excluded_from_dosing(reading, settings),
         exclusion_refused=exclusion_refused(reading, settings),
         reading=reading,
+        retained_icon=EVENING_RETAINED_ICON if evening else RETAINED_ICON,
+        retained_tooltip=EVENING_RETAINED_TOOLTIP if evening else RETAINED_TOOLTIP,
     )
 
 

@@ -261,7 +261,7 @@ class MeasuresPage:
         row.add_prefix(badge)
 
         if line.retained:
-            row.add_suffix(self._chip("Retenue", RETAINED_ICON, RETAINED_TOOLTIP, "retained-chip"))
+            row.add_suffix(self._chip("Retenue", line.retained_icon, line.retained_tooltip, "retained-chip"))
         if line.excluded:
             row.add_suffix(self._chip("Écartée", EXCLUDED_ICON, EXCLUDED_TOOLTIP, "excluded-chip"))
         if line.exclusion_refused:

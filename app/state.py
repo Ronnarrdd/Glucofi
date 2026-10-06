@@ -7,10 +7,33 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from contracts import ClockAction, DoseChange, DoseProposal, DoseRule, DosingSettings, MeterInfo, Reading, ReadingNote
+from app.protocol import (  # noqa: F401  (réexportés : dialogues, pont Android)
+    DOSE_NAMES,
+    FormError,
+    evening_rule_text,
+    fmt_form_g_l,
+    morning_rule_text,
+    parse_count,
+    parse_g_l,
+    protocol_diff,
+    protocol_from_form,
+)
+from contracts import (
+    REFERENCE_LABELS_FR,
+    ClockAction,
+    DoseChange,
+    DoseProposal,
+    DoseRule,
+    DoseTarget,
+    DosingSettings,
+    MeterInfo,
+    ProtocolChange,
+    Reading,
+    ReadingNote,
+)
 from services.device import FetchResult, fmt_offset, parse_file
-from services.dosing import apply_proposal, can_exclude, fmt_g_l, is_morning_candidate, propose
-from services.store import ImportSummary, Store
+from services.dosing import apply_adjustment, can_exclude, fmt_g_l, propose, reference_target
+from services.store import ImportSummary, MergeSummary, Store
 
 log = logging.getLogger("glucofi.state")
 
@@ -61,83 +84,46 @@ def clock_text(summary: ImportSummary) -> str:
     return f"{gap[0].upper()}{gap[1:]} le {summary.at:%d/%m/%Y}{suffix}"
 
 
-def morning_rule_text(settings: DosingSettings) -> str:
-    return (
-        f"Entre {settings.morning_start:%H:%M} et {settings.morning_end:%H:%M} : première mesure « à jeun », "
-        "sinon première mesure « avant repas » ou sans marqueur. "
-        "Les mesures « après repas », « coucher » et « autre moment » ne comptent pas."
-    )
-
-
 def exclusion_option(reading: Reading, settings: DosingSettings) -> tuple[bool, str]:
     """Peut-on écarter cette mesure de l'ajustement, et l'explication à afficher sous l'interrupteur."""
-    if not is_morning_candidate(reading, settings):
+    target = reference_target(reading, settings)
+    if target is None:
+        what = "une glycémie du matin ou du soir" if settings.morning_titration is not None else "une glycémie du matin"
         return False, (
-            "Cette mesure n'est pas une glycémie du matin possible (heure ou marqueur) : "
+            f"Cette mesure n'est pas {what} possible (heure ou marqueur) : "
             "elle ne sert pas à l'ajustement de la dose."
         )
+    ref, dose = REFERENCE_LABELS_FR[target], DOSE_NAMES[target]
     if not can_exclude(reading, settings):
+        low = settings.titration(target).low_g_l
         return False, (
-            f"Sous le seuil bas ({fmt_g_l(round(settings.low_g_l * 100))}) : une glycémie basse compte toujours. "
+            f"Sous le seuil bas ({fmt_g_l(round(low * 100))}) : une glycémie basse compte toujours. "
             "Si elle vous semble fausse, ne validez pas la baisse proposée."
         )
     return True, (
-        "La mesure ne compte plus comme glycémie du matin : la suivante de la plage la remplace, "
-        "sinon le jour n'a pas de glycémie du matin et la série de jours hauts repart de zéro."
+        f"La mesure ne compte plus comme glycémie du {ref} pour la {dose} : la suivante de la plage la remplace, "
+        f"sinon le jour n'a pas de glycémie du {ref} et la série de jours hauts repart de zéro."
     )
 
 
-class FormError(ValueError):
-    """Champ de formulaire invalide : `field` désigne la ligne à signaler."""
-
-    def __init__(self, field: str, message: str):
-        super().__init__(message)
-        self.field = field
-
-
-def parse_g_l(field: str, text: str) -> float:
-    """« 0,80 » ou « 0.8 » en g/L, entre 0,20 et 5,00."""
-    try:
-        value = float(text.strip().replace(",", "."))
-    except ValueError:
-        raise FormError(field, f"« {text} » n'est pas une glycémie en g/L (ex. 1,20)") from None
-    if not 0.2 <= value <= 5.0:
-        raise FormError(field, f"{text} g/L est hors de la plage 0,20 à 5,00 g/L")
-    return round(value, 2)
-
-
-def parse_count(field: str, text: str, minimum: int, maximum: int) -> int:
-    try:
-        value = int(text.strip())
-    except ValueError:
-        raise FormError(field, f"« {text} » n'est pas un nombre entier") from None
-    if not minimum <= value <= maximum:
-        raise FormError(field, f"{value} est hors de la plage {minimum} à {maximum}")
-    return value
-
-
-def protocol_from_form(form: dict[str, str], base: dict | None = None) -> DosingSettings:
-    """Protocole saisi depuis l'ordonnance ; `base` garde les autres réglages (plage du matin, alertes)."""
-    insulin = form.get("insulin", "").strip()
-    if not insulin:
-        raise FormError("insulin", "indiquez le nom de l'insuline prescrite")
-    low = parse_g_l("low_g_l", form.get("low_g_l", ""))
-    high = parse_g_l("high_g_l", form.get("high_g_l", ""))
-    if low >= high:
-        raise FormError("high_g_l", "le seuil haut doit être au-dessus du seuil bas")
-    values = dict(base or {})
-    values.update(
-        insulin=insulin,
-        low_g_l=low,
-        high_g_l=high,
-        step_ui=parse_count("step_ui", form.get("step_ui", ""), 1, 20),
-        high_streak_days=parse_count("high_streak_days", form.get("high_streak_days", ""), 1, 14),
-    )
-    return DosingSettings(**values)
-
-
-def fmt_form_g_l(value: float | None) -> str:
-    return "" if value is None else f"{value:.2f}".replace(".", ",")
+def merge_message(summary: MergeSummary) -> str:
+    """Résultat d'une fusion, en une phrase (toast, bandeau) ; les alertes sont affichées à part."""
+    if not summary.changed:
+        return f"Rien de nouveau dans {summary.source} : les deux bases étaient déjà à jour."
+    parts = []
+    for count, one, many in (
+        (summary.readings_added, "mesure", "mesures"),
+        (summary.markers_added, "marqueur repas", "marqueurs repas"),
+        (summary.notes_added + summary.notes_updated, "note", "notes"),
+        (summary.doses_added, "dose validée", "doses validées"),
+        (summary.protocol_versions_added, "version du protocole", "versions du protocole"),
+    ):
+        if count:
+            parts.append(f"{count} {one if count == 1 else many}")
+    text = f"Fusion de {summary.source} : " + (", ".join(parts) if parts else "lectures du lecteur") + " ajouté(es)"
+    if summary.protocol_changed:
+        text += " ; protocole mis à jour"
+    return text + "."
 
 
 class AppState:
@@ -178,12 +164,19 @@ class AppState:
         """Dose de départ ou protocole manquant (installation neuve, ou base d'avant le protocole saisi)."""
         return self.needs_start_dose or self.settings is None
 
-    def configure_protocol(self, settings: DosingSettings) -> None:
-        self.store.save_dosing_settings(settings)
-        log.info(
-            "protocole : %s, objectif %s-%s g/L, pas %s UI, %s jours",
-            settings.insulin, settings.low_g_l, settings.high_g_l, settings.step_ui, settings.high_streak_days,
-        )
+    def configure_protocol(
+        self, settings: DosingSettings, note: str = "", effective: datetime | None = None
+    ) -> ProtocolChange | None:
+        """Nouveau protocole (ordonnance) ; rend la version ajoutée à l'historique, None si rien n'a changé."""
+        previous = self.settings
+        effective = effective or self._now().replace(second=0, microsecond=0)
+        change = self.store.save_dosing_settings(settings, note=note, effective=effective)
+        if change is not None:
+            log.info("protocole %s : %s", "saisi" if previous is None else "modifié", " ; ".join(protocol_diff(previous, settings)))
+        return change
+
+    def protocol_changes(self) -> list[ProtocolChange]:
+        return self.store.protocol_changes()
 
     def start_protocol(
         self, patient_name: str, start: datetime, morning_ui: int, evening_ui: int, settings: DosingSettings
@@ -191,7 +184,7 @@ class AppState:
         if morning_ui < 0 or evening_ui < 0:
             raise ValueError("une dose ne peut pas être négative")
         self.set_patient_name(patient_name)
-        self.configure_protocol(settings)
+        self.configure_protocol(settings, effective=start)
         change = self.store.add_dose_change(
             DoseChange(start, morning_ui, evening_ui, DoseRule.START)
         )
@@ -218,18 +211,21 @@ class AppState:
             return None
         return propose(self.store.readings(), changes, settings, self._today())
 
-    def validate(self, shown: DoseProposal, note: str = "") -> DoseChange:
-        """Valide la proposition affichée, après avoir vérifié qu'elle est toujours d'actualité."""
+    def validate(self, shown: DoseProposal, note: str = "", target: DoseTarget = DoseTarget.EVENING) -> DoseChange:
+        """Valide l'ajustement affiché d'une dose, après avoir vérifié qu'il est toujours d'actualité."""
         fresh = self.proposal()
+        before, after = shown.adjustment(target), fresh.adjustment(target) if fresh is not None else None
         if (
-            fresh is None
+            after is None
+            or before is None
             or fresh.current != shown.current
-            or fresh.rule != shown.rule
-            or fresh.proposed_evening_ui != shown.proposed_evening_ui
+            or (after.rule, after.proposed_ui, after.current_ui) != (before.rule, before.proposed_ui, before.current_ui)
         ):
             raise StaleProposal("Les données ont changé : vérifiez la nouvelle proposition.")
-        change = self.store.add_dose_change(apply_proposal(fresh, self._now().replace(second=0, microsecond=0), note))
-        log.info("dose validée : %s, soir %s -> %s UI", change.rule.value, fresh.current.evening_ui, change.evening_ui)
+        change = self.store.add_dose_change(
+            apply_adjustment(fresh, target, self._now().replace(second=0, microsecond=0), note)
+        )
+        log.info("dose validée : %s, %s %s -> %s UI", change.rule.value, DOSE_NAMES[target], after.current_ui, after.proposed_ui)
         return change
 
     def manual_change(self, morning_ui: int, evening_ui: int, note: str) -> DoseChange:
@@ -284,3 +280,14 @@ class AppState:
 
     def last_import(self) -> ImportSummary | None:
         return self.store.last_import()
+
+    def export_db(self, path: Path) -> Path:
+        """Copie de la base à fusionner sur l'autre appareil (PC ou tablette)."""
+        return self.store.export_to(path)
+
+    def merge_db(self, path: Path) -> MergeSummary:
+        """Fusionne la base d'un autre appareil ; MergeRefused si le fichier n'est pas une base Glucofi lisible."""
+        summary = self.store.merge_from(path)
+        for warning in summary.warnings:
+            log.warning("fusion de %s : %s", summary.source, warning)
+        return summary

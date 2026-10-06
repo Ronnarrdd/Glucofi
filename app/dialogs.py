@@ -8,7 +8,9 @@ from typing import Callable
 from gi.repository import Adw, Gtk
 
 from app.measures import marker_of
-from app.state import AppState, FormError, exclusion_option, fmt_form_g_l, parse_count, protocol_from_form
+from app.protocol import protocol_to_form
+from app.protocol_editor import ProtocolEditor
+from app.state import AppState, FormError, exclusion_option, parse_count
 from contracts import NOTE_MAX_CHARS, NOTE_TAG_LABELS_FR, NoteTag, Reading, ReadingNote
 from services.dosing import fmt_g_l
 
@@ -33,7 +35,7 @@ def _entry(title: str, text: str = "") -> Adw.EntryRow:
 
 
 def _dialog_shell(title: str, page: Adw.PreferencesPage, button: Gtk.Button, closable: bool = True) -> Adw.Dialog:
-    dialog = Adw.Dialog(title=title, content_width=460)
+    dialog = Adw.Dialog(title=title, content_width=560)
     dialog.set_can_close(closable)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar(show_end_title_buttons=closable)
@@ -56,48 +58,9 @@ def parse_date_fr(text: str) -> date:
     return datetime.strptime(text.strip(), "%d/%m/%Y").date()
 
 
-def parse_hhmm(text: str) -> time:
-    try:
-        return datetime.strptime(text.strip(), "%H:%M").time()
-    except ValueError:
-        raise ValueError(f"heure invalide « {text} », format HH:MM attendu") from None
-
-
-def _protocol_rows(draft: dict) -> dict[str, Adw.EntryRow]:
-    """Champs de l'ordonnance, vides tant que l'utilisateur ne les a pas saisis."""
-    step = draft.get("step_ui")
-    streak = draft.get("high_streak_days")
-    return {
-        "insulin": _entry("Insuline du soir (nom sur l'ordonnance)", draft.get("insulin", "")),
-        "low_g_l": _entry("Seuil bas du matin (g/L)", fmt_form_g_l(draft.get("low_g_l"))),
-        "high_g_l": _entry("Seuil haut du matin (g/L)", fmt_form_g_l(draft.get("high_g_l"))),
-        "step_ui": _entry("Pas d'ajustement (UI)", "" if step is None else str(step)),
-        "high_streak_days": _entry("Jours consécutifs au-dessus pour une hausse", "" if streak is None else str(streak)),
-    }
-
-
-def _protocol_group(rows: dict[str, Adw.EntryRow]) -> Adw.PreferencesGroup:
-    group = Adw.PreferencesGroup(
-        title="Protocole du médecin",
-        description=(
-            "Recopiez les valeurs de l'ordonnance. Glycémie du matin sous le seuil bas : la dose du soir baisse "
-            "du pas. Au-dessus du seuil haut le nombre de jours indiqué : elle augmente du pas. "
-            "Glucofi ne fait que proposer ; rien n'est appliqué sans votre validation."
-        ),
-    )
-    for row in rows.values():
-        group.add(row)
-    return group
-
-
-def _read_protocol(rows: dict[str, Adw.EntryRow], base: dict):
-    try:
-        return protocol_from_form({k: r.get_text() for k, r in rows.items()}, base), None
-    except FormError as exc:
-        rows[exc.field].add_css_class("error")
-        return None, str(exc)
-    except ValueError as exc:
-        return None, str(exc)
+def _sentence(message: str) -> str:
+    message = str(message)
+    return f"{message[0].upper()}{message[1:]}" + ("" if message.endswith(".") else ".")
 
 
 def onboarding_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[], None]) -> None:
@@ -123,12 +86,13 @@ def onboarding_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[],
         intro.add(start)
     page.add(intro)
 
-    rows = _protocol_rows(state.store.dosing_draft())
-    page.add(_protocol_group(rows))
+    editor = ProtocolEditor(protocol_to_form(state.settings, state.store.dosing_draft()))
+    for group in editor.groups:
+        page.add(group)
     if with_dose:
         doses = Adw.PreferencesGroup(
             title="Dose de départ",
-            description="Doses prescrites au début du protocole. Seules les glycémies du matin à partir de la date de début comptent.",
+            description="Doses prescrites au début du protocole. Seules les glycémies à partir de la date de début comptent.",
         )
         doses.add(morning)
         doses.add(evening)
@@ -145,9 +109,9 @@ def onboarding_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[],
         error.set_visible(True)
 
     def on_click(_btn):
-        settings, problem = _read_protocol(rows, state.store.dosing_draft())
+        settings, problem = editor.read(state.store.dosing_draft())
         if settings is None:
-            fail(problem)
+            fail(_sentence(problem))
             return
         if not with_dose:
             state.set_patient_name(name.get_text())
@@ -194,8 +158,8 @@ def manual_dose_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[]
     page = Adw.PreferencesPage()
     group = Adw.PreferencesGroup(
         title="Modifier la dose",
-        description="À utiliser uniquement sur consigne du médecin. La nouvelle dose s'applique dès maintenant "
-        f"et remet à zéro le suivi des {settings.high_streak_days} jours.",
+        description="À utiliser uniquement sur consigne du médecin. La nouvelle dose s'applique dès maintenant ; "
+        "le suivi repart de zéro pour la dose qui change, l'autre garde ses jours déjà comptés.",
     )
     morning = _spin("Matin", current.morning_ui, 0, MAX_UI, 1, subtitle=f"unités (UI) de {settings.insulin}")
     evening = _spin("Soir", current.evening_ui, 0, MAX_UI, 1, subtitle=f"unités (UI) de {settings.insulin}")
@@ -309,43 +273,40 @@ def note_dialog(parent: Gtk.Widget, state: AppState, reading: Reading, on_done: 
 
 
 def preferences_dialog(parent: Gtk.Widget, state: AppState, on_saved: Callable[[str | None], None]) -> None:
-    s = state.settings
-    if s is None:
+    """Patient et protocole ; enregistré à la fermeture, avec une nouvelle version dans l'historique."""
+    if state.settings is None:
         onboarding_dialog(parent, state, lambda: on_saved(None))
         return
-    dialog = Adw.PreferencesDialog(title="Préférences")
+    dialog = Adw.PreferencesDialog(title="Préférences", content_width=640)
     page = Adw.PreferencesPage(title="Protocole", icon_name="preferences-system-symbolic")
 
     patient = Adw.PreferencesGroup(title="Patient")
     name = _entry("Nom", state.patient_name)
     patient.add(name)
+    page.add(patient)
 
-    morning = Adw.PreferencesGroup(
-        title="Glycémie du matin",
-        description="La glycémie du matin est prise dans cette plage horaire (heure du lecteur) : première mesure « à jeun », sinon « avant repas » ou sans marqueur.",
-    )
-    start = _entry("Début (HH:MM)", s.morning_start.strftime("%H:%M"))
-    end = _entry("Fin (HH:MM)", s.morning_end.strftime("%H:%M"))
-    morning.add(start)
-    morning.add(end)
-
-    rows = _protocol_rows(state.store.dosing_draft())
-    for group in (patient, morning, _protocol_group(rows)):
+    editor = ProtocolEditor(protocol_to_form(state.settings))
+    for group in editor.groups:
         page.add(group)
+    history = Adw.PreferencesGroup(
+        title="Historique",
+        description="Si vous changez le protocole, la nouvelle version entre dans l'historique (onglet Doses).",
+    )
+    motive = _entry("Motif du changement (ex. consultation du Dr ...)")
+    history.add(motive)
+    page.add(history)
     dialog.add(page)
 
-    def on_closed(_dialog):
-        state.set_patient_name(name.get_text())
-        try:
-            base = dict(state.store.dosing_draft(), morning_start=parse_hhmm(start.get_text()), morning_end=parse_hhmm(end.get_text()))
-            new, problem = _read_protocol(rows, base)
-        except ValueError as exc:
-            new, problem = None, str(exc)
+    def on_close_attempt(_dialog):
+        new, problem = editor.read(state.store.dosing_draft())
         if new is None:
-            on_saved(f"Réglages non enregistrés : {problem}")
+            dialog.add_toast(Adw.Toast(title=f"À corriger : {problem}", timeout=6))
             return
-        state.configure_protocol(new)
-        on_saved(None)
+        state.set_patient_name(name.get_text())
+        change = state.configure_protocol(new, motive.get_text().strip())
+        dialog.force_close()
+        on_saved("Nouveau protocole enregistré dans l'historique" if change is not None else None)
 
-    dialog.connect("closed", on_closed)
+    dialog.set_can_close(False)
+    dialog.connect("close-attempt", on_close_attempt)
     dialog.present(parent)

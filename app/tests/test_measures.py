@@ -7,7 +7,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from app.measures import (
+    EVENING_RETAINED_ICON,
+    EVENING_RETAINED_TOOLTIP,
     LEVEL_CSS,
+    RETAINED_ICON,
     LEVEL_ICONS,
     MARKER_ICONS,
     MEAL_FILTERS,
@@ -17,7 +20,7 @@ from app.measures import (
     measure_view,
     range_spans,
 )
-from contracts import MG_DL_HIGH, MG_DL_LOW, DosingSettings, Meal, MeterInfo, NoteTag, Reading, ReadingNote
+from contracts import MG_DL_HIGH, MG_DL_LOW, DosingSettings, Meal, MeterInfo, NoteTag, Reading, ReadingNote, Titration
 from services.charts import compute_stats
 from services.dosing import fmt_g_l
 
@@ -248,6 +251,20 @@ class NoteLineTest(unittest.TestCase):
         low = replace(reading("2026-09-01T07:00", 60, Meal.FASTING), note=ReadingNote((NoteTag.DOUBTFUL,), exclude_from_dosing=True))
         line = view([low]).lines[0]
         self.assertEqual((line.retained, line.excluded, line.exclusion_refused), (True, False, True))
+
+    def test_evening_reference_is_retained_only_with_a_morning_titration(self):
+        readings = [
+            reading("2026-09-01T07:30", 120, Meal.FASTING),
+            reading("2026-09-01T18:00", 200, Meal.AFTER_MEAL),
+            reading("2026-09-01T19:00", 140, Meal.BEFORE_MEAL),
+        ]
+        plain = {line.time: line.retained for line in view(readings).days[0].lines}
+        self.assertEqual(plain, {"07:30": True, "18:00": False, "19:00": False})
+        settings = replace(SETTINGS, morning_titration=Titration(0.9, 1.6, 1, 2))
+        lines = {line.time: line for line in measure_view(readings, settings, "all", "all", [], today=TODAY).days[0].lines}
+        self.assertEqual({t: line.retained for t, line in lines.items()}, {"07:30": True, "18:00": False, "19:00": True})
+        self.assertEqual((lines["19:00"].retained_icon, lines["19:00"].retained_tooltip), (EVENING_RETAINED_ICON, EVENING_RETAINED_TOOLTIP))
+        self.assertEqual(lines["07:30"].retained_icon, RETAINED_ICON)
 
     def test_note_without_text_or_tags_shows_nothing(self):
         line = view([replace(reading("2026-09-01T07:00", 120), note=ReadingNote())]).lines[0]

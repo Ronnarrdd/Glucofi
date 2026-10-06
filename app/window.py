@@ -12,12 +12,24 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from app.dialogs import manual_dose_dialog, note_dialog, onboarding_dialog, preferences_dialog
 from app.measures_page import MeasuresPage
-from app.state import AppState, StaleProposal, clock_text, import_message, meter_text, morning_rule_text
+from app.protocol import DOSE_NAMES, evening_rule_text, morning_rule_text, protocol_history, protocol_sections
+from app.state import AppState, StaleProposal, clock_text, import_message, merge_message, meter_text
 from app.widgets import clear as _clear
 from app.widgets import page as _page
 from app.widgets import toggle_group as _toggle_group
-from contracts import MEAL_LABELS_FR, RULE_LABELS_FR, AlertLevel, DoseProposal, Reading
+from contracts import (
+    DOSE_TARGET_LABELS_FR,
+    MEAL_LABELS_FR,
+    REFERENCE_LABELS_FR,
+    RULE_LABELS_FR,
+    AlertLevel,
+    DoseAdjustment,
+    DoseProposal,
+    DoseTarget,
+    Reading,
+)
 from services import device
+from services.store import MergeRefused
 from services.dosing import fmt_g_l, fmt_mg_dl
 
 log = logging.getLogger("glucofi.ui")
@@ -34,19 +46,19 @@ ALERT_STYLES = {
 }
 
 
-def _glycemia_class(reading: Reading, state: AppState) -> str:
-    s = state.settings
-    if reading.g_l < s.low_g_l:
+def _glycemia_class(reading: Reading, state: AppState, target: DoseTarget = DoseTarget.EVENING) -> str:
+    t = state.settings.titration(target)
+    if reading.g_l < t.low_g_l:
         return "error"
-    if reading.g_l > s.high_g_l:
+    if reading.g_l > t.high_g_l:
         return "warning"
     return "success"
 
 
-def _value_label(reading: Reading, state: AppState) -> Gtk.Label:
+def _value_label(reading: Reading, state: AppState, target: DoseTarget = DoseTarget.EVENING) -> Gtk.Label:
     label = Gtk.Label(label=fmt_g_l(reading.mg_dl), valign=Gtk.Align.CENTER)
     label.add_css_class("heading")
-    label.add_css_class(_glycemia_class(reading, state))
+    label.add_css_class(_glycemia_class(reading, state, target))
     return label
 
 
@@ -93,6 +105,10 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append("Importer un fichier JSON…", "win.import")
         menu.append("Exporter en PDF…", "win.export")
         menu.append("Modifier la dose…", "win.manual-dose")
+        sync = Gio.Menu()
+        sync.append("Exporter la base pour la tablette…", "win.export-db")
+        sync.append("Fusionner une base Glucofi…", "win.merge-db")
+        menu.append_section(None, sync)
         section = Gio.Menu()
         section.append("Préférences", "win.preferences")
         section.append("À propos de Glucofi", "win.about")
@@ -126,6 +142,8 @@ class MainWindow(Adw.ApplicationWindow):
             ("import", self.import_file),
             ("export", self.export_pdf),
             ("manual-dose", lambda: manual_dose_dialog(self, self.state, self.refresh)),
+            ("export-db", self.export_db),
+            ("merge-db", self.merge_db),
             ("preferences", self.show_preferences),
             ("about", self.show_about),
         ):
@@ -209,6 +227,50 @@ class MainWindow(Adw.ApplicationWindow):
 
         dialog.open(self, None, done)
 
+    # Base : export et fusion avec la tablette
+
+    def export_db(self) -> None:
+        dialog = Gtk.FileDialog(title="Exporter la base Glucofi", initial_name=f"glucofi-pc-{datetime.now():%Y-%m-%d}.db")
+
+        def done(dlg, result):
+            try:
+                file = dlg.save_finish(result)
+            except GLib.Error:
+                return
+            try:
+                path = self.state.export_db(Path(file.get_path()))
+            except (OSError, RuntimeError) as exc:
+                self.error("Export impossible", str(exc))
+                return
+            self.toast(f"Base exportée : {path.name}. Copiez-la sur la tablette, puis « Fusionner » sur la tablette.", timeout=8)
+
+        dialog.save(self, None, done)
+
+    def merge_db(self) -> None:
+        dialog = Gtk.FileDialog(title="Fusionner une base Glucofi (tablette ou autre PC)")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        db_filter = Gtk.FileFilter(name="Base Glucofi")
+        db_filter.add_pattern("*.db")
+        filters.append(db_filter)
+        dialog.set_filters(filters)
+
+        def done(dlg, result):
+            try:
+                file = dlg.open_finish(result)
+            except GLib.Error:
+                return
+            try:
+                summary = self.state.merge_db(Path(file.get_path()))
+            except MergeRefused as exc:
+                self.error("Fusion impossible", str(exc))
+                return
+            self.toast(merge_message(summary), timeout=8)
+            if summary.warnings:
+                self.error("Fusion terminée, à vérifier", "\n\n".join(summary.warnings))
+            self.refresh()
+
+        dialog.open(self, None, done)
+
     # Export PDF
 
     def export_pdf(self) -> None:
@@ -252,6 +314,11 @@ class MainWindow(Adw.ApplicationWindow):
             until=until,
             patient_name=self.state.patient_name,
             proposal=self.state.proposal(),
+            protocol=protocol_sections(self.state.settings),
+            protocol_history=[
+                (f"{change.effective:%d/%m/%Y %H:%M}" + (f" · {change.note}" if change.note else ""), lines)
+                for change, lines in protocol_history(self.state.protocol_changes())
+            ],
         )
         self.set_busy(True)
 
@@ -342,55 +409,22 @@ class MainWindow(Adw.ApplicationWindow):
             box.append(frame)
 
         current = proposal.current
-        doses = Gtk.Box(spacing=12, homogeneous=True)
         insulin = self.state.settings.insulin
-        doses.append(self._dose_card("Matin", f"{current.morning_ui} UI", insulin))
-        if proposal.changes_dose:
-            doses.append(self._dose_card("Soir", f"{proposal.proposed_evening_ui} UI", f"proposé (actuellement {current.evening_ui} UI)", accent=True))
-        else:
-            doses.append(self._dose_card("Soir", f"{current.evening_ui} UI", insulin))
+        doses = Gtk.Box(spacing=12, homogeneous=True)
+        for target, ui in ((DoseTarget.MORNING, current.morning_ui), (DoseTarget.EVENING, current.evening_ui)):
+            adjustment = proposal.adjustment(target)
+            if adjustment is not None and adjustment.changes_dose:
+                doses.append(self._dose_card(
+                    DOSE_TARGET_LABELS_FR[target], f"{adjustment.proposed_ui} UI", f"proposé (actuellement {ui} UI)", accent=True,
+                ))
+            else:
+                doses.append(self._dose_card(DOSE_TARGET_LABELS_FR[target], f"{ui} UI", insulin))
         box.append(doses)
 
-        group = Adw.PreferencesGroup(title="Ajustement de la dose du soir")
-        row = Adw.ActionRow(title=RULE_LABELS_FR[proposal.rule], subtitle=proposal.reason, subtitle_lines=0)
-        row.set_use_markup(False)
-        if proposal.changes_dose:
-            validate = Gtk.Button(label=f"Valider {proposal.proposed_evening_ui} UI", valign=Gtk.Align.CENTER)
-            validate.add_css_class("suggested-action")
-            validate.connect("clicked", lambda _b: self._confirm_validation(proposal))
-            row.add_suffix(validate)
-            row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
-        else:
-            row.add_prefix(Gtk.Image(icon_name="object-select-symbolic"))
-        group.add(row)
-        box.append(group)
-
-        mornings = Adw.PreferencesGroup(
-            title="Glycémies du matin depuis la dernière dose validée",
-            description=morning_rule_text(self.state.settings),
-        )
-        shown = sorted([(m.reading, False) for m in proposal.mornings] + [(r, True) for r in proposal.excluded])
-        if shown:
-            for reading, excluded in reversed(shown[-10:]):
-                subtitle = f"{reading.device_time:%H:%M} · {fmt_mg_dl(reading.mg_dl)}{_meal_suffix(reading)}"
-                if excluded:
-                    subtitle += f"\nÉcartée de l'ajustement : {reading.note.summary}"
-                elif reading.note is not None and reading.note.summary:
-                    subtitle += f"\nNote : {reading.note.summary}"
-                mrow = Adw.ActionRow(title=f"{DAYS_FR[reading.day.weekday()]} {reading.day:%d/%m/%Y}", subtitle=subtitle)
-                mrow.set_use_markup(False)
-                value = _value_label(reading, self.state)
-                if excluded:
-                    mrow.add_css_class("dim-label")
-                    value.set_tooltip_text("Écartée de l'ajustement de la dose par une note")
-                mrow.add_suffix(value)
-                mrow.set_activatable(True)
-                mrow.set_tooltip_text("Ajouter ou modifier une note")
-                mrow.connect("activated", lambda _r, rd=reading: note_dialog(self, self.state, rd, self.refresh))
-                mornings.add(mrow)
-        else:
-            mornings.add(Adw.ActionRow(title="Aucune glycémie du matin pour l'instant"))
-        box.append(mornings)
+        for adjustment in proposal.adjustments:
+            box.append(self._adjustment_group(proposal, adjustment))
+        for adjustment in proposal.adjustments:
+            box.append(self._references_group(adjustment))
 
         info = Adw.PreferencesGroup(title="Lecteur")
         last = self.state.last_import()
@@ -422,6 +456,50 @@ class MainWindow(Adw.ApplicationWindow):
         disclaimer.add_css_class("caption")
         box.append(disclaimer)
 
+    def _adjustment_group(self, proposal: DoseProposal, adjustment: DoseAdjustment) -> Gtk.Widget:
+        group = Adw.PreferencesGroup(title=f"Ajustement de la {DOSE_NAMES[adjustment.target]}")
+        row = Adw.ActionRow(title=RULE_LABELS_FR[adjustment.rule], subtitle=adjustment.reason, subtitle_lines=0)
+        row.set_use_markup(False)
+        if adjustment.changes_dose:
+            validate = Gtk.Button(label=f"Valider {adjustment.proposed_ui} UI", valign=Gtk.Align.CENTER)
+            validate.add_css_class("suggested-action")
+            validate.connect("clicked", lambda _b: self._confirm_validation(proposal, adjustment))
+            row.add_suffix(validate)
+            row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
+        else:
+            row.add_prefix(Gtk.Image(icon_name="object-select-symbolic"))
+        group.add(row)
+        return group
+
+    def _references_group(self, adjustment: DoseAdjustment) -> Gtk.Widget:
+        target, ref = adjustment.target, REFERENCE_LABELS_FR[adjustment.target]
+        rule = morning_rule_text if target is DoseTarget.EVENING else evening_rule_text
+        group = Adw.PreferencesGroup(
+            title=f"Glycémies du {ref} depuis le dernier changement de la {DOSE_NAMES[target]}",
+            description=rule(self.state.settings),
+        )
+        shown = sorted([(m.reading, False) for m in adjustment.references] + [(r, True) for r in adjustment.excluded])
+        if not shown:
+            group.add(Adw.ActionRow(title=f"Aucune glycémie du {ref} pour l'instant"))
+        for reading, excluded in reversed(shown[-10:]):
+            subtitle = f"{reading.device_time:%H:%M} · {fmt_mg_dl(reading.mg_dl)}{_meal_suffix(reading)}"
+            if excluded:
+                subtitle += f"\nÉcartée de l'ajustement : {reading.note.summary}"
+            elif reading.note is not None and reading.note.summary:
+                subtitle += f"\nNote : {reading.note.summary}"
+            row = Adw.ActionRow(title=f"{DAYS_FR[reading.day.weekday()]} {reading.day:%d/%m/%Y}", subtitle=subtitle)
+            row.set_use_markup(False)
+            value = _value_label(reading, self.state, target)
+            if excluded:
+                row.add_css_class("dim-label")
+                value.set_tooltip_text("Écartée de l'ajustement de la dose par une note")
+            row.add_suffix(value)
+            row.set_activatable(True)
+            row.set_tooltip_text("Ajouter ou modifier une note")
+            row.connect("activated", lambda _r, rd=reading: note_dialog(self, self.state, rd, self.refresh))
+            group.add(row)
+        return group
+
     def _dose_card(self, title: str, value: str, subtitle: str, accent: bool = False) -> Gtk.Widget:
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         card.add_css_class("card")
@@ -438,10 +516,12 @@ class MainWindow(Adw.ApplicationWindow):
             card.append(widget)
         return card
 
-    def _confirm_validation(self, proposal: DoseProposal) -> None:
+    def _confirm_validation(self, proposal: DoseProposal, adjustment: DoseAdjustment) -> None:
+        dose = DOSE_NAMES[adjustment.target]
+        when = "ce soir" if adjustment.target is DoseTarget.EVENING else "demain matin"
         dialog = Adw.AlertDialog(
-            heading=f"Passer la dose du soir de {proposal.current.evening_ui} à {proposal.proposed_evening_ui} UI ?",
-            body=f"{proposal.reason}\n\nLa nouvelle dose s'applique à partir de ce soir.",
+            heading=f"Passer la {dose} de {adjustment.current_ui} à {adjustment.proposed_ui} UI ?",
+            body=f"{adjustment.reason}\n\nLa nouvelle dose s'applique à partir de {when}.",
         )
         dialog.add_response("cancel", "Annuler")
         dialog.add_response("validate", "Valider")
@@ -452,11 +532,11 @@ class MainWindow(Adw.ApplicationWindow):
             if response != "validate":
                 return
             try:
-                change = self.state.validate(proposal)
+                self.state.validate(proposal, target=adjustment.target)
             except StaleProposal as exc:
                 self.toast(str(exc))
             else:
-                self.toast(f"Dose du soir : {change.evening_ui} UI à partir de maintenant")
+                self.toast(f"{dose.capitalize()} : {adjustment.proposed_ui} UI à partir de {when}")
             self.refresh()
 
         dialog.connect("response", on_response)
@@ -491,6 +571,37 @@ class MainWindow(Adw.ApplicationWindow):
                 row.add_suffix(badge)
             group.add(row)
         box.append(group)
+        self._build_protocol(box)
+
+    def _build_protocol(self, box: Gtk.Box) -> None:
+        settings = self.state.settings
+        if settings is None:
+            return
+        group = Adw.PreferencesGroup(title="Protocole en cours", description="Recopié de l'ordonnance ; à modifier dans les Préférences.")
+        edit = Gtk.Button(label="Modifier…", valign=Gtk.Align.CENTER, action_name="win.preferences")
+        edit.add_css_class("flat")
+        group.set_header_suffix(edit)
+        for title, lines in protocol_sections(settings):
+            row = Adw.ActionRow(title=title, subtitle="\n".join(lines), subtitle_lines=0)
+            row.set_use_markup(False)
+            group.add(row)
+        box.append(group)
+
+        history = Adw.PreferencesGroup(title="Historique du protocole", description="La version la plus récente est celle en cours.")
+        entries = protocol_history(self.state.protocol_changes())
+        if not entries:
+            history.add(Adw.ActionRow(title="Aucune version enregistrée"))
+        for i, (change, lines) in enumerate(entries):
+            title = f"Depuis le {change.effective:%d/%m/%Y %H:%M}" + (f" · {change.note}" if change.note else "")
+            row = Adw.ActionRow(title=title, subtitle="\n".join(lines) or "Aucun changement", subtitle_lines=0)
+            row.set_use_markup(False)
+            if i == 0:
+                badge = Gtk.Label(label="En cours", valign=Gtk.Align.CENTER)
+                badge.add_css_class("accent")
+                badge.add_css_class("heading")
+                row.add_suffix(badge)
+            history.add(row)
+        box.append(history)
 
     # Graphiques
 

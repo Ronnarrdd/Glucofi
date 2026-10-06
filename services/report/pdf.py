@@ -31,13 +31,24 @@ from contracts import (
     AlertLevel,
     DoseChange,
     DoseProposal,
+    DoseTarget,
     DosingSettings,
     NoteTag,
     Reading,
 )
 from services.charts import PERIODS, Stats, compute_stats, period_of, stats_by_period
 from services.charts.figures import distribution_figure, figure_png, morning_trend_figure, timeline_figure
-from services.dosing import excluded_from_dosing, exclusion_refused, fmt_g_l, fmt_mg_dl, morning_readings
+from services.dosing import (
+    evening_readings,
+    excluded_from_dosing,
+    exclusion_refused,
+    fmt_g_l,
+    fmt_mg_dl,
+    morning_readings,
+    reference_target,
+)
+
+DOSE_WORDS = {DoseTarget.EVENING: "dose du soir", DoseTarget.MORNING: "dose du matin"}
 
 DISCLAIMER = (
     "Document généré par Glucofi à partir des mesures du lecteur Accu-Chek Guide. "
@@ -52,7 +63,8 @@ LOW_BG = colors.HexColor("#fbd5d7")
 HIGH_BG = colors.HexColor("#ffe3c7")
 DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 MORNING_LEGEND = (
-    "Matin : « retenue » = glycémie du matin utilisée pour l'ajustement de la dose ; « écartée » = retirée de "
+    "Réf. : « retenue » = glycémie de référence utilisée pour l'ajustement (du matin pour la dose du soir, "
+    "du soir pour la dose du matin si le médecin l'ajuste) ; « écartée » = retirée de "
     "l'ajustement par une note du patient ; « comptée » = marquée à écarter mais sous le seuil bas, donc utilisée "
     "quand même (une glycémie basse n'est jamais écartée)."
 )
@@ -68,6 +80,9 @@ class ReportInput:
     patient_name: str = ""
     proposal: DoseProposal | None = None
     generated_at: datetime | None = None
+    # protocole en clair (titre, lignes) et historique (titre, changements), mis en forme par l'appelant
+    protocol: Sequence[tuple[str, Sequence[str]]] = ()
+    protocol_history: Sequence[tuple[str, Sequence[str]]] = ()
 
 
 def _styles():
@@ -139,9 +154,10 @@ def notes_summary(readings: Sequence[Reading], settings: DosingSettings) -> str:
     counts = [(NOTE_TAG_LABELS_FR[tag], sum(tag in r.note.tags for r in noted)) for tag in NoteTag]
     counts.append(("texte libre", sum(bool(r.note.text) for r in noted)))
     text = f"{len(noted)} mesure(s) avec une note : " + ", ".join(f"{name} {n}" for name, n in counts if n) + "."
-    excluded = sum(excluded_from_dosing(r, settings) for r in noted)
-    if excluded:
-        text += f" {excluded} glycémie(s) du matin écartée(s) de l'ajustement de la dose."
+    for target, ref in ((DoseTarget.EVENING, "matin"), (DoseTarget.MORNING, "soir")):
+        excluded = sum(excluded_from_dosing(r, settings) and reference_target(r, settings) is target for r in noted)
+        if excluded:
+            text += f" {excluded} glycémie(s) du {ref} écartée(s) de l'ajustement de la dose."
     return text
 
 
@@ -178,14 +194,27 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
         ))
     if data.proposal:
         p = data.proposal
-        verdict = (
-            f"<b>Proposition : passer la dose du soir à {p.proposed_evening_ui} UI</b> (à valider)."
-            if p.changes_dose else "<b>Proposition : dose inchangée.</b>"
-        )
-        story.append(Paragraph(f"{verdict} {escape(p.reason)}", st["body"]))
+        for adjustment in p.adjustments:
+            dose = DOSE_WORDS[adjustment.target]
+            verdict = (
+                f"<b>Proposition : passer la {dose} à {adjustment.proposed_ui} UI</b> (à valider)."
+                if adjustment.changes_dose else f"<b>Proposition : {dose} inchangée.</b>"
+            )
+            story.append(Paragraph(f"{verdict} {escape(adjustment.reason)}", st["body"]))
         for alert in p.alerts:
             style = st["alert"] if alert.level is AlertLevel.DANGER else st["body"]
             story.append(Paragraph(f"Alerte : {escape(alert.message)}", style))
+
+    if data.protocol:
+        story.append(Paragraph("Protocole", st["h2"]))
+        rows = [[Paragraph(f"<b>{escape(title)}</b>", st["small"]), Paragraph("<br/>".join(map(escape, lines)), st["small"])]
+                for title, lines in data.protocol]
+        story.append(_table([["Réglage", "Valeurs"]] + rows, [6.5 * cm, 11.5 * cm]))
+    if data.protocol_history:
+        story.append(Paragraph("Historique du protocole", st["h2"]))
+        rows = [[Paragraph(escape(title), st["small"]), Paragraph("<br/>".join(map(escape, lines)) or "-", st["small"])]
+                for title, lines in data.protocol_history]
+        story.append(_table([["Version", "Changements"]] + rows, [6.5 * cm, 11.5 * cm]))
 
     story.append(Paragraph("Statistiques", st["h2"]))
     overall = compute_stats(period, settings)
@@ -230,8 +259,10 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
             story.append(Paragraph(escape(notes), st["body"]))
             story.append(Spacer(1, 6))
         morning_keys = {m.reading for m in morning_readings(period, settings)}
+        if settings.morning_titration is not None:
+            morning_keys |= {m.reading for m in evening_readings(period, settings)}
         low, high = round(settings.low_g_l * 100), round(settings.high_g_l * 100)
-        rows = [["Date", "Heure", "Glycémie", "mg/dL", "Moment", "Marqueur", "Matin", "Note"]]
+        rows = [["Date", "Heure", "Glycémie", "mg/dL", "Moment", "Marqueur", "Réf.", "Note"]]
         extra = []
         for i, r in enumerate(sorted(period, reverse=True), start=1):
             rows.append([

@@ -1,6 +1,6 @@
 """Captures d'écran de chaque onglet, pour vérifier l'interface sans clic manuel.
 
-Usage : python3 -m scripts.screenshots EXPORT.json SORTIE_DIR [default|proposal|onboarding|measures]
+Usage : python3 -m scripts.screenshots EXPORT.json SORTIE_DIR [default|proposal|onboarding|measures|titration]
 Crée une base de démonstration temporaire (XDG_DATA_HOME), importe l'export,
 démarre le protocole au 1er du mois précédent la dernière mesure.
 """
@@ -21,11 +21,21 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from app.main import APP_ID, install_style  # noqa: E402
 from app.state import AppState  # noqa: E402
-from contracts import DosingSettings, Meal, NoteTag, Reading, ReadingNote  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from contracts import DosingSettings, HighTier, LowTier, Meal, NoteTag, Reading, ReadingNote, Titration  # noqa: E402
 from services.store import Store  # noqa: E402
 
 # protocole fictif pour les captures, pas une recommandation
 DEMO_PROTOCOL = DosingSettings(insulin="Insuline de démonstration", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3)
+
+# scénario « titration » : paliers et dose du matin ajustée sur la glycémie du soir (fictif lui aussi)
+DEMO_FULL = replace(
+    DEMO_PROTOCOL,
+    low_tiers=(LowTier(0.60, 4),),
+    high_tiers=(HighTier(2.20, 4, 2),),
+    morning_titration=Titration(0.90, 1.60, 1, 2, (LowTier(0.70, 2),), ()),
+)
 
 PAGES = ("today", "charts", "measures", "doses")
 # scénario « measures » : onglet Mesures en largeur (px) et thème donnés
@@ -47,12 +57,40 @@ def snapshot(window: Gtk.Window, path: Path) -> bool:
     return True
 
 
-def _high_mornings_until_today() -> list[Reading]:
-    today = datetime.combine(date.today(), time(7, 30))
+def _high_mornings_until_today(meal: Meal | None = None, hour: time = time(7, 30)) -> list[Reading]:
+    today = datetime.combine(date.today(), hour)
     out = []
     for days_ago, mg in ((2, 182), (1, 205), (0, 176)):
         t = today - timedelta(days=days_ago)
-        out.append(Reading(t, mg, int(t.timestamp())))
+        out.append(Reading(t, mg, int(t.timestamp()), meal=meal))
+    return out
+
+
+def _scroll_dialog(window: Gtk.Window, fraction: float) -> None:
+    """Fait défiler le dialogue ouvert (fraction de la hauteur défilable), pour capturer le bas du formulaire."""
+    def scrolled(widget):
+        if isinstance(widget, Gtk.ScrolledWindow):
+            return widget
+        child = widget.get_first_child()
+        while child is not None:
+            found = scrolled(child)
+            if found is not None:
+                return found
+            child = child.get_next_sibling()
+        return None
+
+    dialog = window.get_visible_dialog()
+    area = scrolled(dialog) if dialog is not None else None
+    if area is not None:
+        adj = area.get_vadjustment()
+        adj.set_value((adj.get_upper() - adj.get_page_size()) * fraction)
+
+
+def _both_doses_until_today() -> list[Reading]:
+    """Trois matins hauts (hausse du soir) et un soir bas avant le dîner (baisse du matin)."""
+    out = _high_mornings_until_today(Meal.FASTING, time(6, 50))
+    t = datetime.combine(date.today(), time(18, 20))
+    out.append(Reading(t, 78, int(t.timestamp()) + 5, meal=Meal.BEFORE_MEAL))
     return out
 
 
@@ -83,10 +121,15 @@ def main() -> int:
         _add_demo_notes(state)
     if scenario == "proposal":
         state.store.import_readings(_high_mornings_until_today(), "démo")
+    if scenario == "titration":
+        state.configure_protocol(DEMO_FULL, "Consultation (démonstration)")
+        state.store.import_readings(_both_doses_until_today(), "démo")
     if scenario == "default":
         pages = list(PAGES)
     elif scenario == "measures":
         pages = list(MEASURES_SHOTS)
+    elif scenario == "titration":
+        pages = ["today", "doses", "preferences", "preferences-0.45", "preferences-1"]
     else:
         pages = ["today"]
 
@@ -124,6 +167,10 @@ def main() -> int:
                 Adw.StyleManager.get_default().set_color_scheme(scheme)
                 window.set_default_size(width, 1100)
                 window.stack.set_visible_child_name("measures")
+            elif name == "preferences":
+                window.show_preferences()
+            elif name.startswith("preferences-"):
+                _scroll_dialog(window, float(name.split("-")[1]))
             else:
                 window.stack.set_visible_child_name(name)
             GLib.timeout_add(900, capture, name)

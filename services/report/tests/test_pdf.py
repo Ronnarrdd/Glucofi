@@ -116,6 +116,43 @@ class PdfTest(unittest.TestCase):
         ):
             self.assertIn(shown, flat)
 
+    def test_morning_dose_protocol_and_history_are_reported(self):
+        from contracts import Titration
+        from services.dosing import propose
+        from services.report.pdf import ReportInput, build_report
+
+        simple = DosingSettings(insulin="Insuline test", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3)
+        settings = replace(simple, morning_titration=Titration(0.90, 1.60, 1, 2))
+        readings = [Reading(datetime(2026, 9, 5, 8), 120, int(datetime(2026, 9, 5, 8).timestamp()))]
+        evening = datetime(2026, 9, 5, 19)
+        readings.append(Reading(evening, 150, int(evening.timestamp()), note=ReadingNote((NoteTag.ILLNESS,), exclude_from_dosing=True)))
+        late = datetime(2026, 9, 5, 20)
+        readings.append(Reading(late, 80, int(late.timestamp())))
+        changes = [DoseChange(datetime(2026, 9, 1, 12), 10, 6, DoseRule.START)]
+        proposal = propose(readings, changes, settings, date(2026, 9, 5))
+        sections = [("Dose du matin, selon la glycémie du soir (17:00-21:59)", ["Sous 0,90 g/L : baisser de 1 UI"])]
+        history = [("03/09/2026 · Dr Test", ["Ajustement de la dose du matin : aucun → automatique"]), ("01/09/2026", [])]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = build_report(
+                ReportInput(
+                    readings, changes, settings, datetime(2026, 9, 1), datetime(2026, 9, 6), "Patient fictif", proposal,
+                    protocol=sections,
+                    protocol_history=history,
+                ),
+                Path(tmp) / "rapport.pdf",
+                dpi=40,
+            )
+            if shutil.which("pdftotext") is None:
+                self.skipTest("pdftotext absent : texte du rapport non vérifié")
+            text = subprocess.run(["pdftotext", str(out), "-"], capture_output=True, text=True, check=True).stdout
+        flat = " ".join(text.split())
+        for shown in (
+            "Proposition : passer la dose du matin à 9 UI", "Proposition : dose du soir inchangée",
+            "Dose du matin, selon la glycémie du soir (17:00-21:59)", "Historique du protocole", "03/09/2026 · Dr Test",
+            "Ajustement de la dose du matin : aucun → automatique", "1 glycémie(s) du soir écartée(s)",
+        ):
+            self.assertIn(shown, flat)
+
 
 @unittest.skipUnless(HAS_DEPS, "matplotlib ou reportlab absent")
 class NotesSummaryTest(unittest.TestCase):
