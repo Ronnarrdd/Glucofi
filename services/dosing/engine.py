@@ -88,6 +88,11 @@ def fmt_excluded(reading: Reading) -> str:
     return f"{fmt_reading(reading)} ({motive})" if motive else fmt_reading(reading)
 
 
+def count_fr(n: int, singular: str, plural: str) -> str:
+    """« 1 glycémie écartée », « 3 glycémies écartées » : accord au nombre réel, sans « (s) »."""
+    return f"{n} {singular if n == 1 else plural}"
+
+
 def _mg(g_l: float) -> int:
     return round(g_l * 100)
 
@@ -322,7 +327,7 @@ def _alerts(readings: Sequence[Reading], current: DoseChange, settings: DosingSe
         yield Alert(
             AlertLevel.DANGER,
             "hypo",
-            f"{len(hypos)} hypoglycémie(s) sous {fmt_g_l(hypo_mg)} sur {ALERT_LOOKBACK_DAYS} jours "
+            f"{count_fr(len(hypos), 'hypoglycémie', 'hypoglycémies')} sous {fmt_g_l(hypo_mg)} sur {ALERT_LOOKBACK_DAYS} jours "
             f"(dernière : {fmt_reading(hypos[-1])}). Resucrez-vous et prévenez le médecin si cela se répète.",
         )
     hypers = [r for r in recent if r.mg_dl > hyper_mg]
@@ -330,7 +335,7 @@ def _alerts(readings: Sequence[Reading], current: DoseChange, settings: DosingSe
         yield Alert(
             AlertLevel.DANGER,
             "hyper",
-            f"{len(hypers)} glycémie(s) au-dessus de {fmt_g_l(hyper_mg)} sur {ALERT_LOOKBACK_DAYS} jours "
+            f"{count_fr(len(hypers), 'glycémie', 'glycémies')} au-dessus de {fmt_g_l(hyper_mg)} sur {ALERT_LOOKBACK_DAYS} jours "
             f"(dernière : {fmt_reading(hypers[-1])}). Contactez le médecin si cela persiste.",
         )
     if current.evening_ui == 0:
@@ -346,14 +351,16 @@ def _exclusion_alerts(excluded: Sequence[Reading], refused: Sequence[Reading], l
         alerts.append(Alert(
             AlertLevel.INFO,
             "excluded" + suffix,
-            f"{len(excluded)} glycémie(s) du {ref} écartée(s) de l'ajustement depuis le dernier changement de la "
-            f"dose {dose} : " + " ; ".join(fmt_excluded(r) for r in excluded) + ".",
+            f"{count_fr(len(excluded), f'glycémie du {ref} écartée', f'glycémies du {ref} écartées')} de l'ajustement "
+            f"depuis le dernier changement de la dose {dose} : " + " ; ".join(fmt_excluded(r) for r in excluded) + ".",
         ))
     if refused:
         alerts.append(Alert(
             AlertLevel.WARNING,
             "exclusion_refused" + suffix,
-            f"{len(refused)} glycémie(s) du {ref} sous {fmt_g_l(low_mg)} marquée(s) à écarter, mais comptée(s) quand même : "
+            count_fr(len(refused), f"glycémie du {ref} sous {fmt_g_l(low_mg)} marquée à écarter, mais comptée",
+                       f"glycémies du {ref} sous {fmt_g_l(low_mg)} marquées à écarter, mais comptées")
+            + " quand même : "
             + " ; ".join(fmt_reading(r) for r in refused)
             + ". Une glycémie basse n'est jamais écartée ; ne validez pas une baisse que vous jugez fausse.",
         ))

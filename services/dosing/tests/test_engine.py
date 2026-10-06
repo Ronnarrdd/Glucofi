@@ -351,6 +351,27 @@ class ExclusionTest(unittest.TestCase):
         self.assertEqual(change.evidence, tuple(fmt_reading(x) for x in readings[1:]))
         self.assertEqual(fmt_excluded(readings[1]), fmt_reading(readings[1]))
 
+    def test_alerts_agree_with_the_count(self):
+        """Textes affichés au patient : « 1 glycémie écartée », « 2 glycémies écartées », jamais « (s) »."""
+        one = mornings([180, 185, 190, 195])
+        one[0] = noted(one[0])
+        two = mornings([180, 182, 185, 190, 195])
+        two[0], two[1] = noted(two[0]), noted(two[1])
+        cases = (
+            (run(one, today=date(2026, 9, 5)), "excluded", "1 glycémie du matin écartée de l'ajustement"),
+            (run(two, today=date(2026, 9, 6)), "excluded", "2 glycémies du matin écartées de l'ajustement"),
+            (run(mornings([120]) + [r("2026-09-02 16:00", 65)]), "hypo", "1 hypoglycémie sous 0,70 g/L"),
+            (run(mornings([120, 120]) + [r("2026-09-02 16:00", 65), r("2026-09-03 16:00", 60)], today=date(2026, 9, 3)),
+             "hypo", "2 hypoglycémies sous 0,70 g/L"),
+            (run([noted(r("2026-09-02 08:00", 60), NoteTag.DOUBTFUL)]), "exclusion_refused",
+             "1 glycémie du matin sous 0,80 g/L marquée à écarter, mais comptée quand même"),
+        )
+        for p, code, expected in cases:
+            with self.subTest(expected=expected):
+                message = next(a.message for a in p.alerts if a.code == code)
+                self.assertTrue(message.startswith(expected), message)
+                self.assertNotIn("(s)", message)
+
 
 class ReadingNoteContractTest(unittest.TestCase):
     def test_tags_are_deduplicated_in_a_fixed_order(self):
