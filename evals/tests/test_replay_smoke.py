@@ -1,6 +1,20 @@
 import unittest
 
-from evals.replay_history import changed_mornings, decisions_changed, replay, synthetic_patient, with_notes
+from unittest import mock
+
+from contracts import LowTier, Titration
+from evals.replay_history import FULL, changed_mornings, decisions_changed, evening_variety, replay, synthetic_patient, with_notes
+
+
+def full_failures(seeds=range(8)) -> tuple[list, list[str]]:
+    rows, failures = [], []
+    for seed in seeds:
+        patient = evening_variety(synthetic_patient(seed, days=45), seed)
+        for source, readings in ((f"c{seed}", patient), (f"cn{seed}", with_notes(patient, seed))):
+            r, f = replay(source, readings, settings=FULL)
+            rows += r
+            failures += f
+    return rows, failures
 
 
 class ReplaySmokeTest(unittest.TestCase):
@@ -37,6 +51,31 @@ class ReplaySmokeTest(unittest.TestCase):
         with mock.patch("services.dosing.engine.can_exclude", lambda _r, _s: True):
             failures = [f for seed in range(8) for f in replay(f"n{seed}", with_notes(synthetic_patient(seed, days=45), seed))[1]]
         self.assertTrue(any("glycémie basse écartée" in f for f in failures))
+
+
+    def test_full_protocol_matches_oracle(self):
+        """Paliers et dose du matin : chaque dose suit l'oracle, et les deux règles du matin se déclenchent."""
+        rows, failures = full_failures()
+        self.assertEqual(failures, [])
+        rules = {row.engine_rule for row in rows}
+        self.assertLessEqual({"decrease_low_evening", "increase_high_evenings", "increase_high_mornings"}, rules)
+        self.assertTrue(any(abs(row.ui_after - row.ui_before) > 2 for row in rows), "aucun palier exercé")
+
+    def test_oracle_catches_a_shared_reset_of_both_doses(self):
+        """Mutation : valider une dose remet aussi à zéro le décompte de l'autre."""
+        from services.dosing import engine
+
+        shared = lambda changes, _target: engine._ordered(changes)[-1]
+        with mock.patch("services.dosing.engine.tracking_start", shared):
+            _, failures = full_failures()
+        self.assertTrue(failures)
+
+    def test_oracle_catches_ignored_tiers(self):
+        """Mutation : seuls le seuil bas et le pas de base comptent, les paliers sont oubliés."""
+        base_only = property(lambda t: (LowTier(t.low_g_l, t.step_ui),))
+        with mock.patch.object(Titration, "all_low_tiers", base_only):
+            _, failures = full_failures()
+        self.assertTrue(any("decrease" in f for f in failures))
 
 
 if __name__ == "__main__":

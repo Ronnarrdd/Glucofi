@@ -223,18 +223,36 @@ class SegmentCount:
 class DoseRule(str, Enum):
     START = "start"
     MANUAL = "manual"
+    # dose du soir, d'après la glycémie du matin
     DECREASE_LOW_MORNING = "decrease_low_morning"
     INCREASE_HIGH_MORNINGS = "increase_high_mornings"
+    # dose du matin, d'après la glycémie du soir (avant le dîner)
+    DECREASE_LOW_EVENING = "decrease_low_evening"
+    INCREASE_HIGH_EVENINGS = "increase_high_evenings"
     KEEP = "keep"
 
 
 RULE_LABELS_FR = {
     DoseRule.START: "Début du protocole",
     DoseRule.MANUAL: "Modification manuelle",
-    DoseRule.DECREASE_LOW_MORNING: "Baisse : glycémie du matin trop basse",
-    DoseRule.INCREASE_HIGH_MORNINGS: "Hausse : glycémie du matin trop haute plusieurs jours de suite",
+    DoseRule.DECREASE_LOW_MORNING: "Baisse du soir : glycémie du matin trop basse",
+    DoseRule.INCREASE_HIGH_MORNINGS: "Hausse du soir : glycémie du matin trop haute plusieurs jours de suite",
+    DoseRule.DECREASE_LOW_EVENING: "Baisse du matin : glycémie du soir trop basse",
+    DoseRule.INCREASE_HIGH_EVENINGS: "Hausse du matin : glycémie du soir trop haute plusieurs jours de suite",
     DoseRule.KEEP: "Dose inchangée",
 }
+
+
+class DoseTarget(str, Enum):
+    """Dose ajustée : le soir d'après la glycémie du matin, le matin d'après la glycémie du soir."""
+
+    EVENING = "evening"
+    MORNING = "morning"
+
+
+DOSE_TARGET_LABELS_FR = {DoseTarget.EVENING: "Soir", DoseTarget.MORNING: "Matin"}
+# glycémie de référence de chaque dose, pour les textes (« glycémie du matin »)
+REFERENCE_LABELS_FR = {DoseTarget.EVENING: "matin", DoseTarget.MORNING: "soir"}
 
 
 @dataclass(frozen=True)
@@ -255,6 +273,9 @@ class DoseChange:
 # marqueurs qui peuvent être la glycémie du matin : "à jeun" passe avant, puis "avant repas" ou sans marqueur
 MORNING_FIRST_CHOICE = Meal.FASTING
 MORNING_ALLOWED_MEALS = frozenset({Meal.FASTING, Meal.BEFORE_MEAL, None})
+# glycémie du soir (avant le dîner) : "avant repas" passe avant, puis sans marqueur
+EVENING_FIRST_CHOICE = Meal.BEFORE_MEAL
+EVENING_ALLOWED_MEALS = frozenset({Meal.BEFORE_MEAL, None})
 
 
 # champs que seule l'ordonnance peut fixer : aucun n'a de valeur par défaut
@@ -262,8 +283,86 @@ PROTOCOL_FIELDS = ("insulin", "low_g_l", "high_g_l", "step_ui", "high_streak_day
 
 
 @dataclass(frozen=True)
+class LowTier:
+    """Palier de baisse : glycémie de référence sous `below_g_l` -> dose diminuée de `step_ui`."""
+
+    below_g_l: float
+    step_ui: int
+
+
+@dataclass(frozen=True)
+class HighTier:
+    """Palier de hausse : glycémie de référence au-dessus de `above_g_l` `days` jours de suite -> dose + `step_ui`."""
+
+    above_g_l: float
+    step_ui: int
+    days: int
+
+
+def _low_tiers(values) -> tuple[LowTier, ...]:
+    tiers = tuple(t if isinstance(t, LowTier) else LowTier(**t) for t in values)
+    return tuple(sorted(tiers, key=lambda t: -t.below_g_l))
+
+
+def _high_tiers(values) -> tuple[HighTier, ...]:
+    tiers = tuple(t if isinstance(t, HighTier) else HighTier(**t) for t in values)
+    return tuple(sorted(tiers, key=lambda t: t.above_g_l))
+
+
+@dataclass(frozen=True)
+class Titration:
+    """Règle d'ajustement d'une dose : objectif (seuils bas et haut), pas, jours, paliers supplémentaires.
+
+    Les paliers supplémentaires sont plus sévères que la règle de base : un palier de baisse est sous le
+    seuil bas, un palier de hausse au-dessus du seuil haut. Ils sont rangés du plus proche au plus loin
+    de l'objectif, quel que soit l'ordre de saisie.
+    """
+
+    low_g_l: float
+    high_g_l: float
+    step_ui: int
+    high_streak_days: int
+    low_tiers: tuple[LowTier, ...] = ()
+    high_tiers: tuple[HighTier, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "low_tiers", _low_tiers(self.low_tiers))
+        object.__setattr__(self, "high_tiers", _high_tiers(self.high_tiers))
+        _check_titration(self)
+
+    @property
+    def all_low_tiers(self) -> tuple[LowTier, ...]:
+        """Règle de base puis paliers, du seuil le plus haut au plus bas."""
+        return (LowTier(self.low_g_l, self.step_ui),) + self.low_tiers
+
+    @property
+    def all_high_tiers(self) -> tuple[HighTier, ...]:
+        """Règle de base puis paliers, du seuil le plus bas au plus haut."""
+        return (HighTier(self.high_g_l, self.step_ui, self.high_streak_days),) + self.high_tiers
+
+
+def _check_titration(t) -> None:
+    if not 0 < t.low_g_l < t.high_g_l:
+        raise ValueError("seuils incohérents : il faut 0 < bas < haut")
+    if t.step_ui <= 0 or t.high_streak_days <= 0:
+        raise ValueError("le pas et la durée de série doivent être positifs")
+    lows = [tier.below_g_l for tier in t.low_tiers]
+    if len(set(lows)) != len(lows) or any(not 0 < v < t.low_g_l for v in lows):
+        raise ValueError("chaque palier de baisse doit avoir son propre seuil, sous le seuil bas")
+    highs = [tier.above_g_l for tier in t.high_tiers]
+    if len(set(highs)) != len(highs) or any(v <= t.high_g_l for v in highs):
+        raise ValueError("chaque palier de hausse doit avoir son propre seuil, au-dessus du seuil haut")
+    if any(tier.step_ui <= 0 for tier in (*t.low_tiers, *t.high_tiers)) or any(tier.days <= 0 for tier in t.high_tiers):
+        raise ValueError("le pas et la durée de chaque palier doivent être positifs")
+
+
+@dataclass(frozen=True)
 class DosingSettings:
-    """Protocole de titration de la dose du soir, saisi par l'utilisateur depuis l'ordonnance."""
+    """Protocole saisi par l'utilisateur depuis l'ordonnance.
+
+    Dose du soir d'après la glycémie du matin (champs à plat, `low_tiers`, `high_tiers`) ; dose du matin
+    d'après la glycémie du soir si l'ordonnance le prévoit (`morning_titration`, None sinon).
+    """
 
     insulin: str
     low_g_l: float
@@ -275,22 +374,60 @@ class DosingSettings:
     hypo_alert_g_l: float = 0.70
     hyper_alert_g_l: float = 3.00
     stale_days: int = 2
+    low_tiers: tuple[LowTier, ...] = ()
+    high_tiers: tuple[HighTier, ...] = ()
+    morning_titration: Titration | None = None
+    evening_start: time = time(17, 0)
+    evening_end: time = time(21, 59)
 
     def __post_init__(self) -> None:
         if not self.insulin.strip():
             raise ValueError("indiquez le nom de l'insuline")
         if self.morning_start > self.morning_end:
             raise ValueError("la plage du matin doit commencer avant de finir")
-        if not 0 < self.low_g_l < self.high_g_l:
-            raise ValueError("seuils incohérents : il faut 0 < bas < haut")
-        if self.step_ui <= 0 or self.high_streak_days <= 0:
-            raise ValueError("le pas et la durée de série doivent être positifs")
+        object.__setattr__(self, "low_tiers", _low_tiers(self.low_tiers))
+        object.__setattr__(self, "high_tiers", _high_tiers(self.high_tiers))
+        if isinstance(self.morning_titration, dict):
+            object.__setattr__(self, "morning_titration", Titration(**self.morning_titration))
+        _check_titration(self)
+        if self.evening_start > self.evening_end:
+            raise ValueError("la plage du soir doit commencer avant de finir")
+        if self.morning_titration is not None and self.evening_start <= self.morning_end:
+            raise ValueError("la plage du soir doit commencer après la fin de la plage du matin")
+
+    @property
+    def evening_titration(self) -> Titration:
+        """Ajustement de la dose du soir, d'après la glycémie du matin."""
+        return Titration(self.low_g_l, self.high_g_l, self.step_ui, self.high_streak_days, self.low_tiers, self.high_tiers)
+
+    def titration(self, target: DoseTarget) -> Titration | None:
+        return self.evening_titration if target is DoseTarget.EVENING else self.morning_titration
+
+    @property
+    def targets(self) -> tuple[DoseTarget, ...]:
+        """Doses que le protocole ajuste : toujours le soir, le matin si l'ordonnance le prévoit."""
+        return (DoseTarget.EVENING,) if self.morning_titration is None else (DoseTarget.EVENING, DoseTarget.MORNING)
+
+
+@dataclass(frozen=True)
+class ProtocolChange:
+    """Version du protocole en vigueur à partir de `effective` (la plus récente est le protocole en cours)."""
+
+    effective: datetime
+    settings: DosingSettings
+    note: str = ""
+    id: int | None = None
 
 
 @dataclass(frozen=True)
 class MorningReading:
+    """Glycémie de référence d'un jour (du matin pour la dose du soir, du soir pour la dose du matin)."""
+
     day: date
     reading: Reading
+
+
+ReferenceReading = MorningReading
 
 
 class AlertLevel(str, Enum):
@@ -307,17 +444,68 @@ class Alert:
 
 
 @dataclass(frozen=True)
-class DoseProposal:
-    current: DoseChange
-    proposed_evening_ui: int
+class DoseAdjustment:
+    """Proposition pour une dose (`target`), d'après ses glycémies de référence depuis son dernier changement."""
+
+    target: DoseTarget
+    current_ui: int
+    proposed_ui: int
     rule: DoseRule
     reason: str
+    # début du suivi : dernier changement de cette dose (ou début du protocole)
+    since: datetime
     evidence: tuple[Reading, ...] = ()
-    mornings: tuple[MorningReading, ...] = ()
-    alerts: tuple[Alert, ...] = ()
-    # glycémies du matin postérieures à la dose en cours, écartées par une note
+    references: tuple[ReferenceReading, ...] = ()
+    # glycémies de référence possibles postérieures à `since`, écartées par une note
     excluded: tuple[Reading, ...] = ()
 
     @property
     def changes_dose(self) -> bool:
-        return self.proposed_evening_ui != self.current.evening_ui
+        return self.proposed_ui != self.current_ui
+
+
+@dataclass(frozen=True)
+class DoseProposal:
+    """Propositions du jour : la dose du soir toujours, la dose du matin si le protocole l'ajuste."""
+
+    current: DoseChange
+    evening: DoseAdjustment
+    morning: DoseAdjustment | None = None
+    alerts: tuple[Alert, ...] = ()
+
+    @property
+    def adjustments(self) -> tuple[DoseAdjustment, ...]:
+        return (self.evening,) if self.morning is None else (self.evening, self.morning)
+
+    def adjustment(self, target: DoseTarget) -> DoseAdjustment | None:
+        return self.evening if target is DoseTarget.EVENING else self.morning
+
+    @property
+    def changes_dose(self) -> bool:
+        return any(a.changes_dose for a in self.adjustments)
+
+    # dose du soir : noms d'avant la dose du matin, gardés pour le rapport PDF, les graphiques et les evals
+
+    @property
+    def proposed_evening_ui(self) -> int:
+        return self.evening.proposed_ui
+
+    @property
+    def rule(self) -> DoseRule:
+        return self.evening.rule
+
+    @property
+    def reason(self) -> str:
+        return self.evening.reason
+
+    @property
+    def evidence(self) -> tuple[Reading, ...]:
+        return self.evening.evidence
+
+    @property
+    def mornings(self) -> tuple[MorningReading, ...]:
+        return self.evening.references
+
+    @property
+    def excluded(self) -> tuple[Reading, ...]:
+        return self.evening.excluded

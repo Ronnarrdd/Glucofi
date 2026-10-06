@@ -107,7 +107,7 @@ Données : `~/.local/share/glucofi/glucofi.db` (SQLite). Journal : `~/.local/sta
 contracts/         types partagés (Reading, DoseChange, DosingSettings...) + schéma JSON d'accuchek
 services/device/   lancement d'accuchek, détection USB (sysfs), parsing (mesures, marqueurs, lecteur, horloge), erreurs typées
   accuchek-src/    accuchek (git subtree de github.com/Ronnarrdd/accuchek)
-services/store/    SQLite : mesures et marqueurs (import idempotent), notes, lecteurs, doses, réglages, journal d'imports
+services/store/    SQLite : mesures et marqueurs (import idempotent), notes, lecteurs, doses, historique du protocole, réglages, journal d'imports, export et fusion
 services/dosing/   moteur de titration pur et déterministe
 services/charts/   statistiques + figures matplotlib (écran et PDF)
 services/report/   rapport PDF (reportlab)
@@ -136,9 +136,10 @@ python3 -m evals.accuchek_replay           # rejoue les traces USB (synthétique
 python3 -m evals.accuchek_errors           # pannes injectées (timeout, débranchement, abandon)
 make -C services/device/accuchek-src fuzz  # 200 000 paquets USB mutés contre les décodeurs d'accuchek
 python3 -m evals.store_migration --db COPIE.db  # rapport avant/après d'une migration, sur une copie
+python3 -m evals.store_merge               # fusion PC/tablette : 60 scénarios contre un oracle
 ```
 
-L'eval de rejeu rejoue chaque jour d'un historique (proposition à 20:00, validée), compare le moteur à un oracle réécrit depuis le texte des règles et vérifie les invariants : dose jamais négative, au plus un changement par jour, preuves conformes. Seuil : 100 %. L'eval de l'onglet Mesures vérifie, pour chaque combinaison de filtres, que chaque mesure apparaît une fois, dans l'ordre, avec le bon niveau, que la glycémie retenue est celle du moteur et que la barre de répartition reste fidèle aux pourcentages. Seuil : 100 %. Les rapports CSV sont écrits dans `/tmp/glucofi-eval/`. Les evals utilisent un protocole fictif, qui n'est pas une recommandation.
+L'eval de rejeu rejoue chaque jour d'un historique (proposition à 20:00, chaque dose qui change est validée), avec le protocole simple puis un protocole complet (paliers, dose du matin sur la glycémie du soir), compare chaque dose à un oracle réécrit depuis le texte des règles et vérifie les invariants : dose jamais négative, au plus un changement par dose et par jour, l'autre dose jamais touchée, pas conformes aux paliers, preuves conformes et postérieures au dernier changement de la dose. Seuil : 100 %. L'eval de fusion fait vivre deux bases (PC et tablette) avec lectures, notes, doses, protocole et fusions dans les deux sens, et vérifie la convergence contre un oracle. Seuil : 100 %. L'eval de l'onglet Mesures vérifie, pour chaque combinaison de filtres, que chaque mesure apparaît une fois, dans l'ordre, avec le bon niveau, que la glycémie retenue est celle du moteur et que la barre de répartition reste fidèle aux pourcentages. Seuil : 100 %. Les rapports CSV sont écrits dans `/tmp/glucofi-eval/`. Les evals utilisent un protocole fictif, qui n'est pas une recommandation.
 
 Les exports de mesures (`test.json`, `mesures*.json`), `raw/`, `traces/` et `*.db` contiennent des données de santé : ils sont exclus du dépôt (`.gitignore` + hook).
 

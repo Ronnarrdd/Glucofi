@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import shutil
 import sqlite3
 import sys
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from contracts import local_epoch
 from services.device import parse_file
-from services.store import Store, default_data_dir
+from services.store import Store, default_data_dir, parse_settings
 
 OUT_DIR = Path("/tmp/glucofi-migration")
 
@@ -58,6 +59,29 @@ def notes_schema_problems(store: Store) -> list[str]:
     elif any(change.excluded for change in store.dose_changes()):
         problems.append("doses validées avant v4 avec des mesures écartées")
     return problems
+
+
+def raw_protocol(path: Path) -> dict | None:
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        row = db.execute("SELECT value FROM settings WHERE key = 'dosing'").fetchone()
+    finally:
+        db.close()
+    return json.loads(row[0]) if row else None
+
+
+def protocol_problems(store: Store, before: dict | None) -> tuple[list[str], int]:
+    """v5 : protocole en cours inchangé, et présent dans l'historique s'il était valide."""
+    expected = parse_settings(before) if before is not None else None
+    history = store.protocol_changes()
+    problems = []
+    if store.dosing_settings() != expected:
+        problems.append(f"protocole modifié par la migration : {expected} -> {store.dosing_settings()}")
+    if expected is not None and (not history or history[-1].settings != expected):
+        problems.append("protocole en cours absent de l'historique du protocole")
+    if expected is None and history:
+        problems.append(f"{len(history)} version(s) du protocole inventée(s)")
+    return problems, len(history)
 
 
 def meals(path: Path) -> dict[tuple[str, int], str | None]:
@@ -141,10 +165,13 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copy2(args.db, copy)
     before = rows(copy)
     doses_before = doses(copy)
+    protocol_before = raw_protocol(copy)
 
     store = Store(copy)
     migration = store.last_migration
     problems = notes_schema_problems(store)
+    found, versions = protocol_problems(store, protocol_before)
+    problems += found
     notes = store.count_notes()
     store.close()
     after = rows(copy)
@@ -187,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"| {category} | {count} | {t}, {mg}, {old} -> {new} |")
     print()
     print(f"Doses validées : {len(doses_before)}, inchangées : {'oui' if doses(copy) == doses_before else 'NON'} ; notes : {notes}")
+    print(f"Protocole : {'présent' if protocol_before else 'absent'}, historique : {versions} version(s)")
     if args.reimport is not None:
         problems += reimport(copy, args.reimport, work)
     for problem in problems[:20]:

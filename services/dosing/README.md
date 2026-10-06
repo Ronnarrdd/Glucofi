@@ -1,10 +1,13 @@
 # services/dosing
 
-Moteur de titration de la dose du soir. Pur et déterministe : aucune I/O, `today` est passé en paramètre.
+Moteur de titration de la dose du soir et, si l'ordonnance le prévoit, de la dose du matin. Pur et déterministe : aucune I/O, `today` est passé en paramètre.
 
-- `morning_readings(readings, settings)` : glycémie du matin de chaque jour, dans la plage horaire des réglages : la première mesure « à jeun », sinon la première « avant repas » ou sans marqueur. Les marqueurs « après repas », « coucher » et « autre moment » sont exclus (`contracts.MORNING_ALLOWED_MEALS`).
-- Notes : une glycémie du matin possible (`is_morning_candidate`) dont la note a `exclude_from_dosing` est ignorée (`excluded_from_dosing`), sauf sous le seuil bas (`can_exclude`, `exclusion_refused`) : une note ne masque jamais une baisse. Les alertes hypo / hyper voient toutes les mesures.
-- `propose(readings, changes, settings, today) -> DoseProposal` : règle appliquée, dose proposée, justification, alertes (dont `excluded`, niveau INFO, et `exclusion_refused`, niveau WARNING), mesures écartées depuis la dose en cours (`DoseProposal.excluded`).
-- `apply_proposal(proposal, now) -> DoseChange` : à appeler uniquement après validation par l'utilisateur ; `DoseChange.excluded` garde les mesures écartées avec leur motif.
+- Dose du soir : ajustée sur la **glycémie du matin** (`morning_readings`) : dans la plage du matin, la première mesure « à jeun », sinon la première « avant repas » ou sans marqueur (`contracts.MORNING_ALLOWED_MEALS`).
+- Dose du matin (`DosingSettings.morning_titration`, optionnelle) : ajustée sur la **glycémie du soir** (`evening_readings`), c'est-à-dire avant le dîner : dans la plage du soir (`evening_start`-`evening_end`, 17:00-21:59 par défaut), la première « avant repas », sinon la première sans marqueur (`contracts.EVENING_ALLOWED_MEALS`). Sans titration du matin, la dose du matin ne bouge jamais et les mesures du soir ne comptent pas.
+- Paliers (`Titration.low_tiers`, `high_tiers`) : baisse du palier franchi le plus bas (glycémie strictement sous son seuil), hausse du palier atteint le plus haut (N jours calendaires consécutifs strictement au-dessus de son seuil) ; le seuil et le pas de base sont le premier palier. Plancher à 0 UI.
+- Suivi par dose (`tracking_start`) : le décompte d'une dose repart de son dernier changement de valeur (ou d'un nouveau départ). Valider ou changer à la main la dose du soir ne remet pas à zéro le décompte de la dose du matin, et inversement.
+- Notes : une glycémie de référence possible (`is_reference_candidate`) dont la note a `exclude_from_dosing` est ignorée (`excluded_from_dosing`), sauf sous le seuil bas de sa dose (`can_exclude`, `exclusion_refused`) : une note ne masque jamais une baisse. Les alertes hypo / hyper voient toutes les mesures.
+- `propose(readings, changes, settings, today) -> DoseProposal` : un `DoseAdjustment` par dose (`evening`, `morning` ou `None`) avec règle, dose proposée, justification, preuves, mesures écartées, plus les alertes (codes suffixés `_morning` pour la dose du matin : `stale_morning`, `excluded_morning`, `exclusion_refused_morning`, `morning_zero`). Les propriétés `proposed_evening_ui`, `rule`, `reason`, `evidence`, `mornings`, `excluded` restent celles de la dose du soir.
+- `apply_adjustment(proposal, target, now)` : à appeler uniquement après validation par l'utilisateur, une dose à la fois (l'autre dose ne bouge pas) ; recalculer la proposition avant de valider la seconde. `apply_proposal(proposal, now)` = dose du soir.
 
-Tests : `python3 -m unittest discover -t . -s services/dosing`. Eval : `python3 -m evals.replay_history`.
+Tests : `python3 -m unittest discover -t . -s services/dosing`. Eval : `python3 -m evals.replay_history` (protocole simple et protocole complet : paliers et dose du matin).

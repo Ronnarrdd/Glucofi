@@ -33,6 +33,8 @@ class StoreMigrationSmokeTest(TimezoneParis, unittest.TestCase):
         self.assertIn("| corrigée -1 h (été) | 2 |", out.getvalue())
         self.assertIn("Migration v2 -> v3", out.getvalue())
         self.assertIn("Migration v3 -> v4", out.getvalue())
+        self.assertIn("Migration v4 -> v5", out.getvalue())
+        self.assertIn("Protocole : absent, historique : 0 version(s)", out.getvalue())
         self.assertIn("Doses validées : 0, inchangées : oui ; notes : 0", out.getvalue())
         self.assertEqual(source.read_bytes(), original)
 
@@ -50,6 +52,21 @@ class StoreMigrationSmokeTest(TimezoneParis, unittest.TestCase):
             code = main(["--db", str(source), "--out", str(Path(tmp.name) / "rapport")])
         self.assertEqual(code, 0, out.getvalue())
         self.assertIn("Doses validées : 1, inchangées : oui", out.getvalue())
+
+    def test_v4_copy_with_a_protocol_seeds_the_history(self):
+        from services.store.tests.test_protocol_and_merge import V4_WITH_PROTOCOL
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        source = Path(tmp.name) / "glucofi.db"
+        db = sqlite3.connect(source)
+        db.executescript(V4_WITH_PROTOCOL)
+        db.close()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(["--db", str(source), "--out", str(Path(tmp.name) / "rapport")])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("Protocole : présent, historique : 1 version(s)", out.getvalue())
 
     def test_reimport_fills_markers_without_duplicates(self):
         tmp = tempfile.TemporaryDirectory()
