@@ -2,7 +2,7 @@
 
 Synchronisation USB avec Glucofi pour Android, par adb. Contrat partagé avec l'app : `contracts/tablet_sync.py`.
 
-- `TabletLink.connect()` : trouve adb (`find_adb` : PATH, puis `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `~/Android/Sdk/platform-tools`), choisit l'appareil où Glucofi est installée (`pick_device` : la vraie tablette passe avant un émulateur ; plusieurs tablettes, aucune, non autorisée : message clair), puis vérifie que l'app sait synchroniser et parle la même `SYNC_VERSION` (`hello`).
+- `TabletLink.connect()` : trouve adb (`find_adb` : PATH, puis `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `~/Android/Sdk/platform-tools`), choisit l'appareil où Glucofi est installée (`pick_device` : jamais un émulateur, sauf `GLUCOFI_SYNC_EMULATOR=1`, sinon ses données de démonstration se mêleraient aux vraies ; plusieurs tablettes, aucune, non autorisée : message clair), puis vérifie que l'app sait synchroniser et parle la même `SYNC_VERSION` (`hello`).
 - `fetch(workdir)` : efface d'abord le dossier d'échange (`reset_sync_dir`, `rm -r -f` de ce seul dossier : un dossier créé par adb appartient à l'uid shell et l'app ne pourrait plus y écrire, vérifié sur Android 16), puis la tablette écrit sa base (`export`), adb la récupère, la copie laissée sur la tablette est effacée (`cleanup`).
 - `send(pc_db)` : adb pousse la base du PC, la tablette la fusionne puis l'efface (`merge`, `cleanup`).
 - `sync(pc, link, workdir)` : l'aller-retour complet. Après une synchronisation réussie, PC et tablette contiennent la même chose ; une seconde synchronisation ne change rien et ne laisse aucune sauvegarde.

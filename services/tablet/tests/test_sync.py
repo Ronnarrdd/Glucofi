@@ -115,7 +115,25 @@ class PickDeviceTest(Fixture):
 
     def test_real_tablet_wins_over_an_emulator(self):
         self.tablet.others.append(("emulator-5580", "sdk", True))
-        self.assertEqual(pick_device(self.adb).serial, self.tablet.serial)
+        self.assertEqual(pick_device(self.adb, environ={}).serial, self.tablet.serial)
+
+    def test_an_emulator_alone_is_never_picked(self):
+        """07/10/2026 : tablette débranchée, émulateur ouvert : ses données de démonstration sont parties dans la vraie base."""
+        self.tablet.serial = "emulator-5580"
+        with self.assertRaises(TabletError) as raised:
+            pick_device(self.adb, environ={})
+        self.assertIn("Seul un émulateur", str(raised.exception))
+        with self.assertRaises(TabletError):
+            TabletLink.connect(self.adb)
+        self.assertEqual(self.tablet.calls, [], "aucun échange avec l'émulateur")
+        self.assertEqual(pick_device(self.adb, environ={"GLUCOFI_SYNC_EMULATOR": "1"}).serial, "emulator-5580")
+
+    def test_unauthorized_tablet_is_reported_even_with_an_emulator(self):
+        self.tablet.state = "unauthorized"
+        self.tablet.others.append(("emulator-5580", "sdk", True))
+        with self.assertRaises(TabletError) as raised:
+            pick_device(self.adb, environ={})
+        self.assertIn("Autoriser le débogage USB", str(raised.exception))
 
     def test_messages(self):
         cases = []

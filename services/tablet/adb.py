@@ -163,15 +163,31 @@ _UNAUTHORIZED = (
 )
 
 
-def pick_device(adb: Adb) -> Device:
-    """La tablette où Glucofi est installée ; un message clair sinon (rien de branché, non autorisée, plusieurs)."""
-    devices = adb.devices()
+ALLOW_EMULATOR_ENV = "GLUCOFI_SYNC_EMULATOR"
+
+
+def pick_device(adb: Adb, environ: dict[str, str] | None = None) -> Device:
+    """La tablette où Glucofi est installée ; un message clair sinon (rien de branché, non autorisée, plusieurs).
+
+    Un émulateur n'est jamais choisi, sauf GLUCOFI_SYNC_EMULATOR=1 : ses bases de démonstration
+    se mélangeraient aux vraies mesures, d'un côté puis de l'autre.
+    """
+    environ = os.environ if environ is None else environ
+    found = adb.devices()
+    emulators = [d for d in found if d.emulator]
+    devices = found if environ.get(ALLOW_EMULATOR_ENV) == "1" else [d for d in found if not d.emulator]
     ready = [d for d in devices if d.state == "device"]
     if not ready:
         if any(d.state == "unauthorized" for d in devices):
             raise TabletError(_UNAUTHORIZED)
         if devices:
             raise TabletError(f"La tablette n'est pas prête (état adb : {devices[0].state}) : débranchez-la et rebranchez-la.")
+        if emulators:
+            raise TabletError(
+                f"Seul un émulateur Android est branché ({', '.join(d.serial for d in emulators)}), pas de tablette : "
+                "Glucofi ne se synchronise pas avec un émulateur, pour ne pas mélanger des données de test aux vraies. "
+                "Branchez la tablette, puis recommencez."
+            )
         raise TabletError(
             "Aucune tablette trouvée : branchez-la en USB, déverrouillez-la, et vérifiez que le débogage USB est "
             "activé (Paramètres > Options pour les développeurs)."
