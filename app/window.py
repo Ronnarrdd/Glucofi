@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import shutil
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +32,9 @@ from contracts import (
     Reading,
 )
 from services import device
+from contracts.tablet_sync import PC_FILE
+from services.tablet import TabletError, TabletLink
+from services.tablet import result as sync_result
 from services.store import MergeRefused
 from services.dosing import fmt_g_l, fmt_mg_dl
 
@@ -99,7 +104,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.fetch_button.add_css_class("suggested-action")
         self.fetch_button.connect("clicked", lambda _b: self.fetch_from_device())
         self.spinner = Adw.Spinner(visible=False)
+        self.sync_button = Gtk.Button(
+            icon_name="phone-symbolic",
+            tooltip_text="Synchroniser avec la tablette branchée en USB (dans les deux sens)",
+            action_name="win.sync-tablet",
+        )
         header.pack_start(self.fetch_button)
+        header.pack_start(self.sync_button)
         header.pack_start(self.spinner)
 
         menu = Gio.Menu()
@@ -107,6 +118,7 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append("Exporter en PDF…", "win.export")
         menu.append("Modifier la dose…", "win.manual-dose")
         sync = Gio.Menu()
+        sync.append("Synchroniser avec la tablette (USB)", "win.sync-tablet")
         sync.append("Exporter la base pour la tablette…", "win.export-db")
         sync.append("Fusionner une base Glucofi…", "win.merge-db")
         menu.append_section(None, sync)
@@ -143,6 +155,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("import", self.import_file),
             ("export", self.export_pdf),
             ("manual-dose", lambda: manual_dose_dialog(self, self.state, self.refresh)),
+            ("sync-tablet", self.sync_tablet),
             ("export-db", self.export_db),
             ("merge-db", self.merge_db),
             ("preferences", self.show_preferences),
@@ -172,6 +185,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.busy = busy
         self.spinner.set_visible(busy)
         self.fetch_button.set_sensitive(not busy)
+        self.sync_button.set_sensitive(not busy)
 
     # Lecteur
 
@@ -227,6 +241,83 @@ class MainWindow(Adw.ApplicationWindow):
             self.refresh()
 
         dialog.open(self, None, done)
+
+    # Tablette : synchronisation par adb (services/tablet)
+
+    def sync_tablet(self) -> None:
+        """Base de la tablette fusionnée ici, puis celle du PC fusionnée là-bas : les deux à jour.
+
+        Les échanges adb tournent sur un thread ; la fusion et l'export du PC sur celui-ci, qui possède la base.
+        """
+        if self.busy:
+            return
+        self.set_busy(True)
+        self.toast("Synchronisation avec la tablette… Ne la débranchez pas.", timeout=3)
+        workdir = Path(tempfile.mkdtemp(prefix="glucofi-tablette-"))
+
+        def finish(error: str | None, done=None) -> bool:
+            shutil.rmtree(workdir, ignore_errors=True)
+            self.set_busy(False)
+            if error:
+                self.error("Synchronisation impossible", error)
+            elif done is not None:
+                self._sync_done(done)
+            self.refresh()
+            return False
+
+        def fetch() -> None:
+            try:
+                link = TabletLink.connect()
+                path = link.fetch(workdir)
+            except TabletError as exc:
+                log.warning("synchronisation : %s", exc)
+                GLib.idle_add(finish, str(exc))
+                return
+            except Exception as exc:  # noqa: BLE001 - toute erreur doit remonter à l'écran
+                log.exception("synchronisation : erreur inattendue")
+                GLib.idle_add(finish, f"Erreur inattendue : {exc}")
+                return
+            GLib.idle_add(merge_here, link, path)
+
+        def merge_here(link: TabletLink, path: Path) -> bool:
+            try:
+                summary = self.state.merge_db(path)
+                pc_db = self.state.export_db(workdir / PC_FILE)
+            except MergeRefused as exc:
+                return finish(f"La base reçue de la tablette n'a pas pu être fusionnée : {exc}")
+            except (OSError, RuntimeError) as exc:
+                return finish(f"Export de la base du PC impossible : {exc}")
+            threading.Thread(target=send, args=(link, summary, pc_db), daemon=True).start()
+            return False
+
+        def send(link: TabletLink, summary, pc_db: Path) -> None:
+            try:
+                reply = link.send(pc_db)
+            except TabletError as exc:
+                log.warning("synchronisation, envoi : %s", exc)
+                GLib.idle_add(finish, f"{merge_message(summary)}\n\nMais la tablette n'a pas reçu la base du PC : {exc}")
+                return
+            except Exception as exc:  # noqa: BLE001
+                log.exception("synchronisation : erreur inattendue à l'envoi")
+                GLib.idle_add(finish, f"Erreur inattendue : {exc}")
+                return
+            GLib.idle_add(finish, None, sync_result(link.device, summary, reply))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _sync_done(self, done) -> None:
+        name = done.device.model or "la tablette"
+        if not done.changed:
+            self.toast(f"PC et tablette ({name}) déjà à jour.")
+            return
+        body = f"Sur le PC : {merge_message(done.pc)}\n\nSur la tablette : {done.tablet.message}"
+        if done.warnings:
+            body += "\n\nÀ vérifier :\n" + "\n".join(f"• {w}" for w in done.warnings)
+            dialog = Adw.AlertDialog(heading="Synchronisation terminée, à vérifier", body=body)
+            dialog.add_response("ok", "Fermer")
+            dialog.present(self)
+        else:
+            self.toast(f"PC et tablette ({name}) synchronisés.", button="Détails", on_button=lambda: self.error("Synchronisation terminée", body), timeout=8)
 
     # Base : export et fusion avec la tablette
 

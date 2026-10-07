@@ -13,7 +13,7 @@ Application GTK4 / libadwaita pour Linux (Gnome) :
 - récupération des mesures d'un clic (ou import d'un export JSON), stockage local, utilisable hors ligne, aucune donnée envoyée nulle part ;
 - dose du matin et du soir, avec proposition d'ajustement de la dose du soir d'après les glycémies du matin et, si le médecin le prescrit, de la dose du matin d'après les glycémies du soir, **validée manuellement**, dose par dose ;
 - protocole avec paliers (baisser davantage si la glycémie est très basse, augmenter davantage si elle est très haute), et historique de chaque changement de protocole ;
-- échange avec la tablette Android (Glucofi pour Android) par simple fichier : export de la base, fusion dans les deux sens, rien ne passe par le réseau ;
+- synchronisation avec la tablette Android (Glucofi pour Android) branchée en USB, en un clic et dans les deux sens (adb), ou par simple fichier ; rien ne passe par le réseau ;
 - notes sur les mesures (repas copieux, effet secondaire, maladie...), avec la possibilité d'écarter une glycémie du matin de l'ajustement ;
 - graphiques (14 / 30 / 90 jours) et export **PDF** pour le médecin.
 
@@ -74,7 +74,7 @@ sudo ./packaging/install-system.sh   # une fois : dépendances, accuchek, règle
 
 ### Autres distributions
 
-Installez GTK4, libadwaita, PyGObject, matplotlib, reportlab, un compilateur C++ et les en-têtes de libusb (par exemple sous Debian / Ubuntu : `python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-matplotlib python3-reportlab g++ make libusb-1.0-0-dev`), puis :
+Installez GTK4, libadwaita, PyGObject, matplotlib, reportlab, un compilateur C++ et les en-têtes de libusb (par exemple sous Debian / Ubuntu : `python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-matplotlib python3-reportlab g++ make libusb-1.0-0-dev`, plus `adb` pour la synchronisation USB avec la tablette : `android-tools-adb` ou `adb`), puis :
 
 ```sh
 make -C services/device/accuchek-src
@@ -110,7 +110,8 @@ Si Glucofi affiche « Accès USB au lecteur refusé », débrancher et rebranche
 5. **Notes** : un clic sur une mesure (onglet Mesures, ou glycémies du matin de l'onglet Aujourd'hui) ouvre sa note : étiquettes rapides (repas copieux, activité physique, malade, alcool, oubli d'injection, effet secondaire, mesure douteuse), texte libre (500 caractères), et interrupteur **Écarter de l'ajustement de la dose**, proposé seulement pour une glycémie du matin possible au-dessus du seuil bas. Écarter une mesure demande une étiquette ou un texte. La note s'affiche sous la mesure ; une pastille **Écartée** signale une mesure retirée de l'ajustement, une pastille **Comptée** une glycémie basse marquée à écarter mais comptée quand même. Les notes restent dans Glucofi : un nouvel import du lecteur ne les touche pas.
 6. Menu > **Exporter en PDF…** : choix de la période, puis du fichier. Le rapport donne le protocole et son historique, la proposition pour chaque dose, le résumé des notes de la période, une colonne Note et l'état de chaque glycémie de référence (retenue, écartée, comptée), et les mesures écartées de chaque dose validée.
 7. Onglet **Doses** : historique des doses, protocole en cours en clair, historique du protocole (ce qui a changé à chaque version).
-8. **PC et tablette** : menu > **Exporter la base pour la tablette…** écrit une copie de la base (`glucofi-pc-AAAA-MM-JJ.db`). Copiez-la sur la tablette (câble USB, `adb push`, clé...), puis **Fusionner** dans Glucofi sur la tablette ; dans l'autre sens, menu > **Fusionner une base Glucofi…** sur le PC. La fusion réunit les mesures, notes, doses validées et versions du protocole sans doublon ; la plus récente version du protocole s'applique ; une copie de la base est faite avant (`glucofi.db.avant-fusion-*.bak`), et un message signale les doses ou le protocole modifiés des deux côtés.
+8. **PC et tablette, en USB** : branchez la tablette, puis le bouton téléphone de la barre (ou menu > **Synchroniser avec la tablette (USB)**). Glucofi récupère la base de la tablette, la fusionne ici, puis fusionne celle du PC sur la tablette : les deux sont à jour, et un message dit ce qui a changé de chaque côté (ou « déjà à jour »). Il faut `adb` (paquet `android-tools`) et, une fois pour toutes, le débogage USB activé sur la tablette : Paramètres > À propos de la tablette > Informations sur le logiciel, toucher 7 fois « Numéro de version », puis Paramètres > Options de développement > Débogage USB ; au premier branchement, accepter « Autoriser le débogage USB ? » en cochant « Toujours autoriser ». La tablette doit être déverrouillée. Une fusion qui ne change rien ne laisse pas de sauvegarde ; les 20 dernières sauvegardes `avant-fusion` sont gardées.
+9. **PC et tablette, par fichier** (sans adb) : menu > **Exporter la base pour la tablette…** écrit une copie de la base (`glucofi-pc-AAAA-MM-JJ.db`). Copiez-la sur la tablette (câble USB, `adb push`, clé...), puis **Fusionner** dans Glucofi sur la tablette ; dans l'autre sens, menu > **Fusionner une base Glucofi…** sur le PC. La fusion réunit les mesures, notes, doses validées et versions du protocole sans doublon ; la plus récente version du protocole s'applique ; une copie de la base est faite avant (`glucofi.db.avant-fusion-*.bak`), et un message signale les doses ou le protocole modifiés des deux côtés.
 
 Données : `~/.local/share/glucofi/glucofi.db` (SQLite). Journal : `~/.local/state/glucofi/glucofi.log` (lectures, imports, validations de dose).
 
@@ -124,6 +125,7 @@ services/store/    SQLite : mesures et marqueurs (import idempotent), notes, lec
 services/dosing/   moteur de titration pur et déterministe
 services/charts/   statistiques + figures matplotlib (écran et PDF)
 services/report/   rapport PDF (reportlab)
+services/tablet/   synchronisation USB avec l'app Android (adb, contrat contracts/tablet_sync.py)
 app/               interface GTK4 / libadwaita (state.py, measures.py = logique sans GTK, testée ; icons/ = icônes des marqueurs)
 evals/             rejeu du moteur et de l'onglet Mesures contre des oracles indépendants
 packaging/         règle udev, .desktop, icône, installation système

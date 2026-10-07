@@ -195,6 +195,54 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(again.changed)
         self.assertEqual(self.content(self.tablet), once)
 
+    def backups(self, store: Store) -> list[Path]:
+        return sorted(store.path.parent.glob("glucofi.db.avant-fusion-*.bak"))
+
+    def test_merge_that_changes_nothing_leaves_no_backup(self):
+        source = self.export(self.pc, "pc.db")
+        first = self.tablet.merge_from(source)
+        self.assertEqual(self.backups(self.tablet), [first.backup])
+        again = self.tablet.merge_from(source)
+        self.assertIsNone(again.backup)
+        self.assertEqual(self.backups(self.tablet), [first.backup])
+
+    def test_two_merges_in_the_same_second_keep_the_first_backup(self):
+        from unittest import mock
+
+        import services.store.store as store_module
+        frozen = mock.Mock(wraps=datetime)
+        frozen.now.return_value = datetime(2026, 10, 7, 7, 0, 19)
+        source = self.export(self.pc, "pc.db")
+        with mock.patch.object(store_module, "datetime", frozen):
+            first = self.tablet.merge_from(source)
+            again = self.tablet.merge_from(source)
+        self.assertEqual(first.backup.name, "glucofi.db.avant-fusion-20261007-070019.bak")
+        self.assertIsNone(again.backup)
+        self.assertEqual(self.backups(self.tablet), [first.backup], "la fusion sans effet n'efface pas celle d'avant")
+
+    def test_backups_are_ordered_by_their_name(self):
+        from services.store.store import _backup_order
+        names = ["x.avant-fusion-20261007-070019-1.bak", "x.avant-fusion-20261006-235959.bak", "x.avant-fusion-20261007-070019.bak"]
+        self.assertEqual(
+            sorted(names, key=lambda n: _backup_order(Path(n))),
+            ["x.avant-fusion-20261006-235959.bak", "x.avant-fusion-20261007-070019.bak", "x.avant-fusion-20261007-070019-1.bak"],
+        )
+
+    def test_only_the_latest_merge_backups_are_kept(self):
+        from services.store.store import MERGE_BACKUPS_KEPT
+        folder = self.tablet.path.parent
+        old = [folder / f"glucofi.db.avant-fusion-202601{day:02d}-120000.bak" for day in range(1, MERGE_BACKUPS_KEPT + 3)]
+        for path in old:
+            path.write_bytes(b"ancienne")
+        other = folder / "glucofi.db.avant-migration-v4-20260101-120000.bak"
+        other.write_bytes(b"migration")
+        summary = self.tablet.merge_from(self.export(self.pc, "pc.db"))
+        kept = self.backups(self.tablet)
+        self.assertEqual(len(kept), MERGE_BACKUPS_KEPT)
+        self.assertEqual(kept[-1], summary.backup, "la sauvegarde de cette fusion est gardée")
+        self.assertFalse(old[0].exists())
+        self.assertTrue(other.exists(), "les autres sauvegardes ne sont pas concernées")
+
     def test_both_directions_converge(self):
         self.tablet.merge_from(self.export(self.pc, "pc.db"))
         self.tablet.add_dose_change(DoseChange(datetime(2026, 9, 5, 20), 10, 8, DoseRule.INCREASE_HIGH_MORNINGS, ("x",)))

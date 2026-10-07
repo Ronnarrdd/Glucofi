@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 from dataclasses import asdict, dataclass, replace
@@ -35,6 +36,8 @@ log = logging.getLogger("glucofi.store")
 SCHEMA_VERSION = 5
 SQLITE_HEADER = b"SQLite format 3\x00"
 TIME_FIELDS = ("morning_start", "morning_end", "evening_start", "evening_end")
+# sauvegardes « avant-fusion » gardées : une par fusion qui a changé quelque chose
+MERGE_BACKUPS_KEPT = 20
 
 READINGS_TABLE = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -187,6 +190,15 @@ def parse_settings(values: dict) -> DosingSettings | None:
     except (TypeError, ValueError) as exc:
         log.warning("protocole enregistré invalide, à ressaisir : %s", exc)
         return None
+
+
+_BACKUP_STAMP = re.compile(r"-(\d{8}-\d{6})(?:-(\d+))?\.bak$")
+
+
+def _backup_order(path: Path) -> tuple[str, int, str]:
+    """Ordre chronologique d'après le nom (…-AAAAMMJJ-HHMMSS[-n].bak), pas d'après la date du fichier."""
+    match = _BACKUP_STAMP.search(path.name)
+    return (match[1], int(match[2] or 0), path.name) if match else ("", 0, path.name)
 
 
 class MergeRefused(ValueError):
@@ -713,7 +725,8 @@ class Store:
         Mesures, marqueurs, lecteurs, journal des lectures : réunis sans doublon. Notes : la plus récemment
         modifiée l'emporte. Doses validées et versions du protocole : réunies par date ; la version la plus
         récente du protocole devient le protocole en cours. Le nom du patient n'est repris que s'il manque.
-        Une copie de cette base est faite avant : glucofi.db.avant-fusion-AAAAMMJJ-HHMMSS.bak.
+        Une copie de cette base est faite avant : glucofi.db.avant-fusion-AAAAMMJJ-HHMMSS.bak, effacée si la fusion
+        n'a rien changé ; seules les MERGE_BACKUPS_KEPT plus récentes sont gardées (synchronisation fréquente).
         """
         source = Path(source)
         if str(self.path) != ":memory:" and source.resolve() == self.path.resolve():
@@ -736,6 +749,10 @@ class Store:
                 summary = self._merge(other, source.name, backup)
             finally:
                 other.close()
+        if backup is not None and not summary.changed:
+            backup.unlink(missing_ok=True)
+            summary = replace(summary, backup=None)
+        self._prune_backups("avant-fusion", MERGE_BACKUPS_KEPT)
         log.info(
             "fusion de %s : %s mesures, %s marqueurs, %s notes ajoutées et %s mises à jour, %s doses, "
             "%s versions du protocole (protocole en cours %s), %s alertes, sauvegarde %s",
@@ -745,10 +762,23 @@ class Store:
         )
         return summary
 
+    def _prune_backups(self, label: str, keep: int) -> None:
+        if str(self.path) == ":memory:":
+            return
+        backups = sorted(self.path.parent.glob(f"{self.path.name}.{label}-*.bak"), key=_backup_order)
+        for old in backups[:-keep]:
+            old.unlink(missing_ok=True)
+            log.info("ancienne sauvegarde effacée : %s", old.name)
+
     def _backup_named(self, label: str) -> Path | None:
         if str(self.path) == ":memory:":
             return None
-        backup = self.path.with_name(f"{self.path.name}.{label}-{datetime.now():%Y%m%d-%H%M%S}.bak")
+        stamp = f"{self.path.name}.{label}-{datetime.now():%Y%m%d-%H%M%S}"
+        backup = self.path.with_name(f"{stamp}.bak")
+        counter = 0
+        while backup.exists():  # deux fusions dans la même seconde : ne jamais écraser la sauvegarde d'avant
+            counter += 1
+            backup = self.path.with_name(f"{stamp}-{counter}.bak")
         self._copy_to(backup)
         return backup
 

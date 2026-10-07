@@ -15,7 +15,7 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 ACCUCHEK_SRC="$SRC/../services/device/accuchek-src"
 
 urpmi --auto python3-gobject lib64gtk4_1 lib64gtk-gir4.0 lib64adwaita1_0 lib64adwaita-gir1 \
-    python3-matplotlib python3-reportlab gcc-c++ make lib64usb1.0-devel
+    python3-matplotlib python3-reportlab gcc-c++ make lib64usb1.0-devel android-tools
 
 # compilé hors du dépôt : des fichiers root dans accuchek-src empêcheraient
 # ensuite scripts/gate.sh (et le hook pre-commit) de recompiler sans sudo
