@@ -1,4 +1,8 @@
-"""Éditeur GTK du protocole : seuils, paliers, dose du matin, plages horaires (formulaire de app.protocol)."""
+"""Éditeur GTK du protocole : seuils, paliers, dose du matin, plages horaires (formulaire de app.protocol).
+
+Chaque groupe est une carte blanche (classe form-section) ; chaque champ un champ à contour avec son unité
+(« g/L », « UI », « jours », « HH:MM ») en suffixe, comme sur la tablette.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +14,20 @@ LOW_COLUMNS = (("below_g_l", "Sous", "0,60", "g/L"), ("step_ui", "baisser de", "
 HIGH_COLUMNS = (("above_g_l", "Au-dessus de", "2,00", "g/L"), ("step_ui", "augmenter de", "4", "UI"), ("days", "après", "2", "jours"))
 
 
-def entry_row(title: str, text: str = "") -> Adw.EntryRow:
+def form_group(title: str | None = None, description: str | None = None) -> Adw.PreferencesGroup:
+    group = Adw.PreferencesGroup(title=title or "", description=description)
+    group.add_css_class("form-section")
+    return group
+
+
+def entry_row(title: str, text: str = "", suffix: str | None = None) -> Adw.EntryRow:
     row = Adw.EntryRow(title=title)
     row.set_text(text)
     row.connect("changed", lambda r: r.remove_css_class("error"))
+    if suffix:
+        unit = Gtk.Label(label=suffix, valign=Gtk.Align.CENTER)
+        unit.add_css_class("unit-suffix")
+        row.add_suffix(unit)
     return row
 
 
@@ -23,7 +37,7 @@ class TierList:
     def __init__(self, group: Adw.PreferencesGroup, key: str, columns, label: str, add_label: str, rows: list[dict]):
         self.group, self.key, self.columns, self.label = group, key, columns, label
         self.rows: list[tuple[Adw.PreferencesRow, dict[str, Gtk.Entry]]] = []
-        self.add_button = Adw.ButtonRow(title=add_label, start_icon_name="list-add-symbolic")
+        self.add_button = Adw.ButtonRow(title=add_label, start_icon_name="glucofi-add-symbolic")
         self.add_button.connect("activated", lambda _b: self.add({}))
         group.add(self.add_button)
         for values in rows:
@@ -31,11 +45,14 @@ class TierList:
 
     def add(self, values: dict) -> None:
         row = Adw.PreferencesRow(title=self.label)
-        # tient dans 360 px (dialogue étroit) : espacement 8, champs de 4 caractères (« 0,60 », « 2,20 »)
-        line = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8, margin_start=12, margin_end=6)
+        row.add_css_class("tier-row")
+        # tient dans 360 px (dialogue étroit) : titre au-dessus des champs de 4 caractères (« 0,60 », « 2,20 »)
+        line = Gtk.Box(spacing=8, margin_top=10, margin_bottom=10, margin_start=16, margin_end=6)
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True, valign=Gtk.Align.CENTER)
         title = Gtk.Label(xalign=0, valign=Gtk.Align.CENTER)
-        line.append(title)
-        fields = Adw.WrapBox(child_spacing=12, line_spacing=6, hexpand=True, halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
+        title.add_css_class("title-small")
+        column.append(title)
+        fields = Adw.WrapBox(child_spacing=12, line_spacing=6, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
         entries = {}
         for name, before, placeholder, unit in self.columns:
             unit_box = Gtk.Box(spacing=6)
@@ -48,9 +65,12 @@ class TierList:
             unit_box.append(Gtk.Label(label=unit))
             fields.append(unit_box)
             entries[name] = entry
-        line.append(fields)
-        remove = Gtk.Button(icon_name="list-remove-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Supprimer ce palier")
+        column.append(fields)
+        line.append(column)
+        remove = Gtk.Button(icon_name="glucofi-remove-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Supprimer ce palier")
         remove.add_css_class("flat")
+        remove.add_css_class("circular")
+        remove.update_property([Gtk.AccessibleProperty.LABEL], ["Supprimer ce palier"])
         remove.connect("clicked", lambda _b: self.remove(row))
         line.append(remove)
         row.set_child(line)
@@ -81,7 +101,7 @@ class TierList:
 
 
 class ProtocolEditor:
-    """Groupes à ajouter à une Adw.PreferencesPage ; `read()` rend (protocole, None) ou (None, message)."""
+    """Groupes à empiler dans un formulaire ; `read()` rend (protocole, None) ou (None, message)."""
 
     def __init__(self, form: dict):
         self.rows: dict[str, Adw.EntryRow] = {}
@@ -95,17 +115,17 @@ class ProtocolEditor:
             "Glucofi ne fait que proposer ; rien n'est appliqué sans votre validation.",
         )
         self._rows(evening, form, (
-            ("insulin", "Insuline (nom sur l'ordonnance)"),
-            ("low_g_l", "Seuil bas de la glycémie du matin (g/L)"),
-            ("high_g_l", "Seuil haut de la glycémie du matin (g/L)"),
-            ("step_ui", "Pas d'ajustement (UI)"),
-            ("high_streak_days", "Jours consécutifs au-dessus pour une hausse"),
+            ("insulin", "Insuline (nom sur l'ordonnance)", None),
+            ("low_g_l", "Seuil bas de la glycémie du matin", "g/L"),
+            ("high_g_l", "Seuil haut de la glycémie du matin", "g/L"),
+            ("step_ui", "Pas d'ajustement", "UI"),
+            ("high_streak_days", "Jours consécutifs au-dessus pour une hausse", "jours"),
         ))
         window = self._group(
             "Glycémie du matin",
             "Plage horaire (heure du lecteur) : première mesure « à jeun », sinon « avant repas » ou sans marqueur.",
         )
-        self._rows(window, form, (("morning_start", "Début (HH:MM)"), ("morning_end", "Fin (HH:MM)")))
+        self._rows(window, form, (("morning_start", "Début", "HH:MM"), ("morning_end", "Fin", "HH:MM")))
         self._tier_group("", "Paliers de la dose du soir", form)
 
         self.morning = self._group(
@@ -119,26 +139,26 @@ class ProtocolEditor:
         )
         self.morning.add(self.morning_switch)
         self.morning_rows = self._rows(self.morning, form, (
-            ("m_low_g_l", "Seuil bas de la glycémie du soir (g/L)"),
-            ("m_high_g_l", "Seuil haut de la glycémie du soir (g/L)"),
-            ("m_step_ui", "Pas d'ajustement (UI)"),
-            ("m_high_streak_days", "Jours consécutifs au-dessus pour une hausse"),
-            ("evening_start", "Glycémie du soir : début de la plage (HH:MM)"),
-            ("evening_end", "Glycémie du soir : fin de la plage (HH:MM)"),
+            ("m_low_g_l", "Seuil bas de la glycémie du soir", "g/L"),
+            ("m_high_g_l", "Seuil haut de la glycémie du soir", "g/L"),
+            ("m_step_ui", "Pas d'ajustement", "UI"),
+            ("m_high_streak_days", "Jours consécutifs au-dessus pour une hausse", "jours"),
+            ("evening_start", "Glycémie du soir : début de la plage", "HH:MM"),
+            ("evening_end", "Glycémie du soir : fin de la plage", "HH:MM"),
         ))
         self.morning_tiers = self._tier_group("m_", "Paliers de la dose du matin", form)
         self.morning_switch.connect("notify::active", lambda *_a: self._sync_morning())
         self._sync_morning()
 
     def _group(self, title: str, description: str) -> Adw.PreferencesGroup:
-        group = Adw.PreferencesGroup(title=title, description=description)
+        group = form_group(title, description)
         self.groups.append(group)
         return group
 
     def _rows(self, group, form, fields) -> list[Adw.EntryRow]:
         out = []
-        for key, title in fields:
-            row = entry_row(title, str(form.get(key, "")))
+        for key, title, unit in fields:
+            row = entry_row(title, str(form.get(key, "")), suffix=unit)
             self.rows[key] = row
             group.add(row)
             out.append(row)

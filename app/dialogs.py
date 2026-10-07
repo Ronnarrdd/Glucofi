@@ -1,4 +1,9 @@
-"""Boîtes de dialogue : premier lancement, préférences, modification manuelle de la dose, note sur une mesure."""
+"""Boîtes de dialogue : premier lancement, préférences, modification manuelle de la dose, note sur une mesure.
+
+Même style que les formulaires de la tablette : fond sauge, sections en cartes blanches (classe form-section),
+champs à contour aux coins de 16 px avec leur unité, bouton plein en pilule pleine largeur en bas. Le premier
+lancement s'ouvre sur la bannière du renard « Bienvenue dans Glucofi ».
+"""
 
 from __future__ import annotations
 
@@ -7,51 +12,54 @@ from typing import Callable
 
 from gi.repository import Adw, Gtk
 
+from app.art import FoxBanner
+from app.components import button, describe, label
 from app.measures import marker_of
 from app.protocol import protocol_to_form
-from app.protocol_editor import ProtocolEditor
+from app.protocol_editor import ProtocolEditor, entry_row, form_group
 from app.state import AppState, FormError, exclusion_option, parse_count
 from contracts import NOTE_MAX_CHARS, NOTE_TAG_LABELS_FR, NoteTag, Reading, ReadingNote
 from services.dosing import fmt_g_l
 
 MAX_UI = 80
+FORM_WIDTH = 600
+ONBOARDING_WIDTH = 840
+BANNER_COMPACT = "max-width: 559px"
+WELCOME = (
+    "Glucofi propose d'ajuster la dose d'insuline du soir d'après les glycémies du matin, en suivant le protocole "
+    "prescrit par votre médecin. Ne l'utilisez pas sans protocole écrit."
+)
+WELCOME_BACK = (
+    "Glucofi ne contient plus de protocole par défaut : recopiez celui de votre ordonnance pour retrouver les "
+    "propositions de dose."
+)
 
 
-def _spin(title: str, value: float, lower: float, upper: float, step: float, digits: int = 0, subtitle: str = "") -> Adw.SpinRow:
-    row = Adw.SpinRow.new_with_range(lower, upper, step)
-    row.set_title(title)
-    row.set_digits(digits)
-    row.set_value(value)
-    if subtitle:
-        row.set_subtitle(subtitle)
-    return row
+def _error_label() -> Gtk.Label:
+    widget = Gtk.Label(wrap=True, visible=False, xalign=0)
+    widget.add_css_class("error")
+    widget.add_css_class("body-medium")
+    return widget
 
 
-def _entry(title: str, text: str = "") -> Adw.EntryRow:
-    row = Adw.EntryRow(title=title)
-    row.set_text(text)
-    row.connect("changed", lambda r: r.remove_css_class("error"))
-    return row
-
-
-def _dialog_shell(title: str, page: Adw.PreferencesPage, button: Gtk.Button, closable: bool = True) -> Adw.Dialog:
-    dialog = Adw.Dialog(title=title, content_width=560)
+def _form_dialog(
+    title: str, children: list[Gtk.Widget], action: Gtk.Button, closable: bool = True, width: int = FORM_WIDTH,
+) -> tuple[Adw.Dialog, Gtk.Box]:
+    """Dialogue à fond sauge : `children` empilés dans une colonne qui défile, `action` en pilule pleine largeur."""
+    dialog = Adw.Dialog(title=title, content_width=width)
+    dialog.add_css_class("glucofi-form")
     dialog.set_can_close(closable)
     toolbar = Adw.ToolbarView()
-    header = Adw.HeaderBar(show_end_title_buttons=closable)
-    toolbar.add_top_bar(header)
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-    box.append(page)
-    button.set_margin_start(24)
-    button.set_margin_end(24)
-    button.set_margin_bottom(24)
-    button.add_css_class("suggested-action")
-    button.add_css_class("pill")
-    button.set_halign(Gtk.Align.CENTER)
-    box.append(button)
-    toolbar.set_content(box)
+    toolbar.add_top_bar(Adw.HeaderBar(show_end_title_buttons=closable))
+    column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin_start=24, margin_end=24, margin_top=8, margin_bottom=24)
+    for child in children:
+        column.append(child)
+    action.set_halign(Gtk.Align.FILL)
+    column.append(action)
+    clamp = Adw.Clamp(maximum_size=width - 48, tightening_threshold=width - 48, child=column)
+    toolbar.set_content(Gtk.ScrolledWindow(child=clamp, hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True))
     dialog.set_child(toolbar)
-    return dialog
+    return dialog, column
 
 
 def parse_date_fr(text: str) -> date:
@@ -65,44 +73,37 @@ def _sentence(message: str) -> str:
 
 def onboarding_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[], None]) -> None:
     """Premier lancement : protocole, et dose de départ s'il n'y en a pas encore."""
-    page = Adw.PreferencesPage()
     with_dose = state.needs_start_dose
-    intro = Adw.PreferencesGroup(
-        title="Bienvenue dans Glucofi",
-        description=(
-            "Glucofi propose d'ajuster la dose d'insuline du soir d'après les glycémies du matin, "
-            "en suivant le protocole prescrit par votre médecin. Ne l'utilisez pas sans protocole écrit."
-            if with_dose else
-            "Glucofi ne contient plus de protocole par défaut : recopiez celui de votre ordonnance "
-            "pour retrouver les propositions de dose."
-        ),
-    )
-    name = _entry("Nom du patient", state.patient_name)
-    intro.add(name)
-    start = _entry("Début du protocole (JJ/MM/AAAA)", f"{date.today():%d/%m/%Y}")
-    morning = _entry("Dose de départ du matin (UI)")
-    evening = _entry("Dose de départ du soir (UI)")
+    banner = FoxBanner("Bienvenue dans Glucofi", WELCOME if with_dose else WELCOME_BACK)
+    patient = form_group("Patient")
+    name = entry_row("Nom du patient", state.patient_name)
+    patient.add(name)
+    start = entry_row("Début du protocole", f"{date.today():%d/%m/%Y}", suffix="JJ/MM/AAAA")
     if with_dose:
-        intro.add(start)
-    page.add(intro)
-
+        patient.add(start)
     editor = ProtocolEditor(protocol_to_form(state.settings, state.store.dosing_draft()))
-    for group in editor.groups:
-        page.add(group)
+    children: list[Gtk.Widget] = [banner, patient, *editor.groups]
+    morning = entry_row("Dose de départ du matin", suffix="UI")
+    evening = entry_row("Dose de départ du soir", suffix="UI")
     if with_dose:
-        doses = Adw.PreferencesGroup(
-            title="Dose de départ",
-            description="Doses prescrites au début du protocole. Seules les glycémies à partir de la date de début comptent.",
+        doses = form_group(
+            "Dose de départ",
+            "Doses prescrites au début du protocole. Seules les glycémies à partir de la date de début comptent.",
         )
         doses.add(morning)
         doses.add(evening)
-        page.add(doses)
-
-    error = Gtk.Label(wrap=True, visible=False, margin_start=24, margin_end=24, margin_bottom=12)
-    error.add_css_class("error")
-    button = Gtk.Button(label="Commencer le suivi" if with_dose else "Enregistrer le protocole")
-    dialog = _dialog_shell("Premier lancement" if with_dose else "Protocole", page, button, closable=False)
-    button.get_parent().insert_child_after(error, page)
+        children.append(doses)
+    error = _error_label()
+    children.append(error)
+    action = button("Commencer le suivi" if with_dose else "Enregistrer le protocole", tall=True)
+    dialog, _column = _form_dialog(
+        "Premier lancement" if with_dose else "Protocole", children, action, closable=False, width=ONBOARDING_WIDTH,
+    )
+    narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(BANNER_COMPACT))
+    narrow.add_setter(banner, "compact", True)
+    # un dialogue à points de rupture doit déclarer sa taille minimale
+    dialog.set_size_request(360, 320)
+    dialog.add_breakpoint(narrow)
 
     def fail(message: str) -> None:
         error.set_label(message)
@@ -145,8 +146,56 @@ def onboarding_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[],
         dialog.force_close()
         on_done()
 
-    button.connect("clicked", on_click)
+    action.connect("clicked", on_click)
     dialog.present(parent)
+
+
+class Stepper(Gtk.Box):
+    """Dose d'un moment : libellé, état (« au lieu de 10 UI » ou « inchangée »), boutons moins et plus en cercles tonals
+    de 56 px autour de la valeur."""
+
+    __gtype_name__ = "GlucofiStepper"
+
+    def __init__(self, title: str, current: int):
+        super().__init__(spacing=12)
+        self.add_css_class("stepper")
+        self.title = title
+        self.current = current
+        self.value = current
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        texts.append(label(title, "title-medium", xalign=0))
+        self.state_label = label("", "body-medium", "muted", xalign=0, wrap=True)
+        texts.append(self.state_label)
+        self.append(texts)
+        self.minus = self._round("glucofi-remove-symbolic", f"{title} : une unité de moins", -1)
+        self.append(self.minus)
+        self.value_label = label("", "headline-small", "stepper-value", width_chars=5)
+        self.append(self.value_label)
+        self.plus = self._round("glucofi-add-symbolic", f"{title} : une unité de plus", +1)
+        self.append(self.plus)
+        self._sync()
+
+    def _round(self, icon: str, description: str, step: int) -> Gtk.Button:
+        widget = Gtk.Button(icon_name=icon, valign=Gtk.Align.CENTER, tooltip_text=description)
+        widget.add_css_class("stepper-button")
+        describe(widget, description)
+        widget.connect("clicked", lambda _b: self.set_value(self.value + step))
+        return widget
+
+    def set_value(self, value: int) -> None:
+        self.value = min(max(value, 0), MAX_UI)
+        self._sync()
+
+    def _sync(self) -> None:
+        self.value_label.set_label(f"{self.value} UI")
+        changed = self.value != self.current
+        self.state_label.set_label(f"au lieu de {self.current} UI" if changed else "inchangée")
+        self.minus.set_sensitive(self.value > 0)
+        self.plus.set_sensitive(self.value < MAX_UI)
+        self.update_property(
+            [Gtk.AccessibleProperty.DESCRIPTION],
+            [f"{self.value} UI, " + (f"modifiée, actuellement {self.current} UI" if changed else "inchangée")],
+        )
 
 
 def manual_dose_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[], None]) -> None:
@@ -155,30 +204,33 @@ def manual_dose_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[]
     if current is None or settings is None:
         onboarding_dialog(parent, state, on_done)
         return
-    page = Adw.PreferencesPage()
-    group = Adw.PreferencesGroup(
-        title="Modifier la dose",
-        description="À utiliser uniquement sur consigne du médecin. La nouvelle dose s'applique dès maintenant ; "
-        "le suivi repart de zéro pour la dose qui change, l'autre garde ses jours déjà comptés.",
+    group = form_group(
+        "Modifier la dose",
+        "Uniquement sur consigne du médecin. La nouvelle dose s'applique dès maintenant ; le suivi repart de zéro "
+        f"pour la dose qui change, l'autre garde ses jours déjà comptés. Unités (UI) de {settings.insulin}.",
     )
-    morning = _spin("Matin", current.morning_ui, 0, MAX_UI, 1, subtitle=f"unités (UI) de {settings.insulin}")
-    evening = _spin("Soir", current.evening_ui, 0, MAX_UI, 1, subtitle=f"unités (UI) de {settings.insulin}")
-    note = _entry("Motif (ex. consigne du Dr ...)")
-    for row in (morning, evening, note):
-        group.add(row)
-    page.add(group)
-    button = Gtk.Button(label="Enregistrer")
-    dialog = _dialog_shell("Dose", page, button)
+    morning = Stepper("Matin", current.morning_ui)
+    evening = Stepper("Soir", current.evening_ui)
+    group.add(morning)
+    group.add(evening)
+    fields = form_group()
+    note = entry_row("Motif (ex. consigne du Dr …)")
+    fields.add(note)
+    error = _error_label()
+    action = button("Enregistrer", tall=True)
+    dialog, _column = _form_dialog("Dose", [group, fields, error], action)
 
     def on_click(_btn):
         if not note.get_text().strip():
             note.add_css_class("error")
+            error.set_label("Indiquez le motif du changement (consigne du médecin).")
+            error.set_visible(True)
             return
-        state.manual_change(int(morning.get_value()), int(evening.get_value()), note.get_text().strip())
+        state.manual_change(morning.value, evening.value, note.get_text().strip())
         dialog.close()
         on_done()
 
-    button.connect("clicked", on_click)
+    action.connect("clicked", on_click)
     dialog.present(parent)
 
 
@@ -188,11 +240,10 @@ class NoteForm:
     def __init__(self, reading: Reading, state: AppState):
         self.reading = reading
         note = reading.note or ReadingNote()
-        self.page = Adw.PreferencesPage()
 
-        what = Adw.PreferencesGroup(
-            title=f"{reading.device_time:%d/%m/%Y à %H:%M} · {fmt_g_l(reading.mg_dl)}",
-            description=f"{marker_of(reading).label}. La note reste dans Glucofi : le lecteur ne la voit pas.",
+        self.what = form_group(
+            f"{reading.device_time:%d/%m/%Y à %H:%M} · {fmt_g_l(reading.mg_dl)}",
+            f"{marker_of(reading).label}. La note reste dans Glucofi : le lecteur ne la voit pas.",
         )
         tags = Adw.WrapBox(child_spacing=8, line_spacing=8)
         self.tags: dict[NoteTag, Gtk.ToggleButton] = {}
@@ -202,17 +253,13 @@ class NoteForm:
             toggle.connect("toggled", lambda _t: self._sync())
             tags.append(toggle)
             self.tags[tag] = toggle
-        what.add(tags)
-        self.page.add(what)
-
-        free = Adw.PreferencesGroup()
+        self.what.add(tags)
         self.text = Adw.EntryRow(title="Texte libre (facultatif)", max_length=NOTE_MAX_CHARS)
         self.text.set_text(note.text)
         self.text.connect("changed", lambda _r: self._sync())
-        free.add(self.text)
-        self.page.add(free)
+        self.what.add(self.text)
 
-        dosing = Adw.PreferencesGroup(title="Ajustement de la dose")
+        self.dosing = form_group("Ajustement de la dose")
         self.allowed, explanation = exclusion_option(reading, state.settings)
         self.exclude = Adw.SwitchRow(
             title="Écarter de l'ajustement de la dose",
@@ -222,11 +269,12 @@ class NoteForm:
             sensitive=self.allowed,
         )
         self.exclude.connect("notify::active", lambda *_a: self._sync())
-        dosing.add(self.exclude)
-        self.page.add(dosing)
+        self.dosing.add(self.exclude)
+        self.error = _error_label()
 
-        self.error = Gtk.Label(wrap=True, visible=False, margin_start=24, margin_end=24, margin_bottom=12)
-        self.error.add_css_class("error")
+    @property
+    def widgets(self) -> list[Gtk.Widget]:
+        return [self.what, self.dosing, self.error]
 
     def note(self) -> ReadingNote:
         """Raises ValueError si la note est invalide (texte trop long, mesure écartée sans motif)."""
@@ -242,10 +290,8 @@ class NoteForm:
 
 def note_dialog(parent: Gtk.Widget, state: AppState, reading: Reading, on_done: Callable[[], None]) -> None:
     form = NoteForm(reading, state)
-    button = Gtk.Button(label="Enregistrer")
-    dialog = _dialog_shell("Note sur la mesure", form.page, button)
-    box = button.get_parent()
-    box.insert_child_after(form.error, form.page)
+    action = button("Enregistrer", tall=True)
+    dialog, column = _form_dialog("Note sur la mesure", form.widgets, action)
 
     def save(note: ReadingNote | None) -> None:
         state.set_note(reading, note)
@@ -261,43 +307,46 @@ def note_dialog(parent: Gtk.Widget, state: AppState, reading: Reading, on_done: 
             return
         save(note)
 
-    button.connect("clicked", on_save)
+    action.connect("clicked", on_save)
     if reading.note is not None:
-        delete = Gtk.Button(label="Supprimer la note", halign=Gtk.Align.CENTER, margin_bottom=24)
-        delete.add_css_class("destructive-action")
-        delete.add_css_class("flat")
-        delete.connect("clicked", lambda _b: save(None))
-        button.set_margin_bottom(8)
-        box.append(delete)
+        delete = button("Supprimer la note", icon="glucofi-close-symbolic", kind="text", on_click=lambda: save(None), halign=Gtk.Align.CENTER)
+        delete.add_css_class("destructive")
+        column.append(delete)
     dialog.present(parent)
 
 
 def preferences_dialog(parent: Gtk.Widget, state: AppState, on_saved: Callable[[str | None], None]) -> None:
-    """Patient et protocole ; enregistré à la fermeture, avec une nouvelle version dans l'historique."""
+    """Patient et protocole ; enregistré par « Enregistrer » ou à la fermeture, avec une nouvelle version dans
+    l'historique."""
     if state.settings is None:
         onboarding_dialog(parent, state, lambda: on_saved(None))
         return
-    dialog = Adw.PreferencesDialog(title="Préférences", content_width=640)
-    page = Adw.PreferencesPage(title="Protocole", icon_name="preferences-system-symbolic")
+    dialog = Adw.PreferencesDialog(title="Préférences", content_width=680)
+    dialog.add_css_class("glucofi-form")
+    page = Adw.PreferencesPage(title="Protocole", icon_name="glucofi-doses-symbolic")
 
-    patient = Adw.PreferencesGroup(title="Patient")
-    name = _entry("Nom", state.patient_name)
+    patient = form_group("Patient")
+    name = entry_row("Nom", state.patient_name)
     patient.add(name)
     page.add(patient)
 
     editor = ProtocolEditor(protocol_to_form(state.settings))
     for group in editor.groups:
         page.add(group)
-    history = Adw.PreferencesGroup(
-        title="Historique",
-        description="Si vous changez le protocole, la nouvelle version entre dans l'historique (onglet Doses).",
+    history = form_group(
+        "Historique",
+        "Si vous changez le protocole, la nouvelle version entre dans l'historique (onglet Doses).",
     )
-    motive = _entry("Motif du changement (ex. consultation du Dr ...)")
+    motive = entry_row("Motif du changement (ex. consultation du Dr …)")
     history.add(motive)
     page.add(history)
+    actions = Adw.PreferencesGroup()
+    save = button("Enregistrer", tall=True, halign=Gtk.Align.FILL)
+    actions.add(save)
+    page.add(actions)
     dialog.add(page)
 
-    def on_close_attempt(_dialog):
+    def attempt(*_args):
         new, problem = editor.read(state.store.dosing_draft())
         if new is None:
             dialog.add_toast(Adw.Toast(title=f"À corriger : {problem}", timeout=6))
@@ -308,5 +357,6 @@ def preferences_dialog(parent: Gtk.Widget, state: AppState, on_saved: Callable[[
         on_saved("Nouveau protocole enregistré dans l'historique" if change is not None else None)
 
     dialog.set_can_close(False)
-    dialog.connect("close-attempt", on_close_attempt)
+    dialog.connect("close-attempt", attempt)
+    save.connect("clicked", attempt)
     dialog.present(parent)

@@ -7,10 +7,9 @@ from datetime import date, datetime
 from pathlib import Path
 
 from app.measures import (
-    EVENING_RETAINED_ICON,
     EVENING_RETAINED_TOOLTIP,
+    RETAINED_TOOLTIP,
     LEVEL_CSS,
-    RETAINED_ICON,
     LEVEL_ICONS,
     MARKER_ICONS,
     MEAL_FILTERS,
@@ -120,8 +119,8 @@ class LevelTest(unittest.TestCase):
         ]).lines
         by_title = {line.title: line for line in lines}
         high, low, ok = by_title["08:00"], by_title["21:00"], by_title["12:00"]
-        self.assertEqual((high.value, high.mg, high.css, high.level_icon), ("HI (> 6,00 g/L)", "> 600 mg/dL", "warning", "go-up-symbolic"))
-        self.assertEqual((low.value, low.mg, low.css, low.level_icon), ("LO (< 0,10 g/L)", "< 10 mg/dL", "error", "go-down-symbolic"))
+        self.assertEqual((high.value, high.mg, high.css, high.level_icon), ("HI (> 6,00 g/L)", "> 600 mg/dL", "warning", "glucofi-arrow-up-symbolic"))
+        self.assertEqual((low.value, low.mg, low.css, low.level_icon), ("LO (< 0,10 g/L)", "< 10 mg/dL", "error", "glucofi-arrow-down-symbolic"))
         self.assertEqual((ok.css, ok.level_icon), ("success", None))
         self.assertEqual(ok.level_label, "Dans l'objectif (0,80 g/L à 1,50 g/L)")
         self.assertEqual(low.level_label, "Sous l'objectif (moins de 0,80 g/L)")
@@ -143,7 +142,7 @@ class MarkerTest(unittest.TestCase):
 
     def test_filters_and_icons_cover_the_same_keys(self):
         keys = {key for key, _label in MEAL_FILTERS}
-        self.assertEqual(set(MARKER_ICONS), keys)
+        self.assertEqual(set(MARKER_ICONS), keys - {"all"}, "« Tous » est un filtre, pas un marqueur : pas d'icône")
         self.assertLessEqual({m.value for m in Meal} | {"all", "none"}, keys)
 
     def test_app_icons_exist_and_are_filled_symbolic_svgs(self):
@@ -263,8 +262,8 @@ class NoteLineTest(unittest.TestCase):
         settings = replace(SETTINGS, morning_titration=Titration(0.9, 1.6, 1, 2))
         lines = {line.time: line for line in measure_view(readings, settings, "all", "all", [], today=TODAY).days[0].lines}
         self.assertEqual({t: line.retained for t, line in lines.items()}, {"07:30": True, "18:00": False, "19:00": True})
-        self.assertEqual((lines["19:00"].retained_icon, lines["19:00"].retained_tooltip), (EVENING_RETAINED_ICON, EVENING_RETAINED_TOOLTIP))
-        self.assertEqual(lines["07:30"].retained_icon, RETAINED_ICON)
+        self.assertEqual(lines["19:00"].retained_tooltip, EVENING_RETAINED_TOOLTIP)
+        self.assertEqual(lines["07:30"].retained_tooltip, RETAINED_TOOLTIP)
 
     def test_note_without_text_or_tags_shows_nothing(self):
         line = view([replace(reading("2026-09-01T07:00", 120), note=ReadingNote())]).lines[0]

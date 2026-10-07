@@ -18,12 +18,15 @@ Application GTK4 / libadwaita pour Linux (Gnome) :
 - graphiques (14 / 30 / 90 jours) et export **PDF** pour le médecin.
 
 <p align="center">
-  <img src="docs/screenshots/aujourdhui.png" width="32%" alt="Onglet Mesures : résumé, répartition et mesures du jour avec leur marqueur">
-  <img src="docs/screenshots/graphiques.png" width="32%" alt="Onglet Graphiques : courbe et glycémies du matin">
-  <img src="docs/screenshots/premier-lancement.png" width="32%" alt="Premier lancement : protocole à recopier depuis l'ordonnance">
+  <img src="docs/screenshots/aujourdhui.png" width="40%" alt="Onglet Aujourd'hui : bannière du renard, tuiles Matin et Soir avec leur bouton Valider, colonne Pourquoi ? et dernière mesure">
+  <img src="docs/screenshots/aujourdhui-sombre.png" width="40%" alt="Onglet Aujourd'hui en thème sombre">
 </p>
 <p align="center">
-  <img src="docs/screenshots/deux-doses.png" width="40%" alt="Onglet Aujourd'hui : proposition pour la dose du matin et pour la dose du soir, chacune avec son bouton Valider">
+  <img src="docs/screenshots/mesures.png" width="32%" alt="Onglet Mesures : filtres en pilules, tuiles de synthèse, répartition et mesures du jour avec leur marqueur">
+  <img src="docs/screenshots/graphiques.png" width="32%" alt="Onglet Graphiques : courbe et glycémies du matin">
+  <img src="docs/screenshots/premier-lancement.png" width="32%" alt="Premier lancement : bannière de bienvenue et protocole à recopier depuis l'ordonnance">
+</p>
+<p align="center">
   <img src="docs/screenshots/protocole.png" width="40%" alt="Préférences : paliers de baisse et de hausse, et ajustement de la dose du matin selon la glycémie du soir">
 </p>
 <p align="center"><sub>Captures réalisées avec des mesures et un protocole fictifs (<code>python3 -m scripts.screenshots --readme</code>).</sub></p>
@@ -94,8 +97,8 @@ Si Glucofi affiche « Accès USB au lecteur refusé », débrancher et rebranche
 ## Utilisation
 
 1. Premier lancement : nom du patient, protocole de l'ordonnance, date de début et doses de départ.
-2. Brancher le lecteur, cliquer **Récupérer**. Les nouvelles mesures sont ajoutées (les doublons sont ignorés) avec leur marqueur repas, et une copie brute de chaque lecture est gardée dans `~/.local/share/glucofi/raw/`. Si l'horloge du lecteur s'écarte de plus de 60 s de celle du PC et que l'heure du PC est synchronisée (NTP), le lecteur est remis à l'heure. Un message signale une lecture incomplète, des marqueurs sans mesure ou une horloge qui n'a pas pu être corrigée.
-3. Onglet **Aujourd'hui** : doses du matin et du soir, une proposition par dose avec son bouton **Valider**, alertes, derniers matins avec leur marqueur, lecteur (modèle, numéro de série, logiciel) et état de son horloge.
+2. Brancher le lecteur (la pastille de la bannière passe à « Lecteur branché »), cliquer **Récupérer les mesures** dans la bannière d'Aujourd'hui (ou menu, ou Ctrl+R). Les nouvelles mesures sont ajoutées (les doublons sont ignorés) avec leur marqueur repas, et une copie brute de chaque lecture est gardée dans `~/.local/share/glucofi/raw/`. Si l'horloge du lecteur s'écarte de plus de 60 s de celle du PC et que l'heure du PC est synchronisée (NTP), le lecteur est remis à l'heure. Un message signale une lecture incomplète, des marqueurs sans mesure ou une horloge qui n'a pas pu être corrigée.
+3. Onglet **Aujourd'hui** : bannière « Bonjour » avec la date, tuiles **Matin** et **Soir** (la dose proposée en grand, « au lieu de N UI », bouton **Valider N UI** qui demande confirmation), colonne **Pourquoi ?** avec les glycémies qui décident, dernière mesure, alertes. **Voir le détail** ouvre la règle appliquée, les glycémies de référence (un clic ouvre leur note) et le lecteur (dernière récupération, modèle, horloge).
 4. Onglet **Mesures** : filtres par période, moment de la journée et marqueur repas ; résumé de la sélection (moyenne, part dans l'objectif, hypoglycémies, barre de répartition sous / dans / au-dessus de l'objectif) ; mesures groupées par jour (« Aujourd'hui », « Hier », puis la date), avec la glycémie du matin retenue dans l'en-tête du jour et une pastille **Retenue** sur sa ligne. Chaque mesure montre l'icône de son marqueur, sur le modèle de celles du lecteur, et sa valeur colorée selon l'objectif, avec une flèche ↑ ou ↓ hors objectif :
 
    | Icône | Marqueur |
@@ -117,10 +120,11 @@ Données : `~/.local/share/glucofi/glucofi.db` (SQLite). Journal : `~/.local/sta
 
 ## Apparence
 
-Glucofi sur PC reprend le thème de Glucofi pour Android : fond sauge, cartes blanches arrondies, tuiles pastel, doses du matin (pêche) et du soir (lavande), pastilles et boutons en pilule, mêmes couleurs de niveau (sous, dans, au-dessus de l'objectif), polices **Fredoka** (titres et chiffres) et **Nunito** (texte). La mise en page reste celle du PC. Le thème suit le mode clair ou sombre de Gnome (Paramètres > Apparence), graphiques compris ; le PDF pour le médecin garde ses couleurs d'impression.
+Glucofi sur PC reprend le thème de Glucofi pour Android : fond sauge, cartes blanches arrondies, tuiles pastel, doses du matin (pêche) et du soir (lavande), pastilles et boutons en pilule, mêmes couleurs de niveau (sous, dans, au-dessus de l'objectif), polices **Fredoka** (titres et chiffres) et **Nunito** (texte). Les écrans sont composés comme sur la tablette (bannière du renard, tuiles Matin et Soir, filtres en pilules, cartes par jour) ; les écarts propres au PC sont décrits dans [DESIGN.md](DESIGN.md). Sous 600 px de large, les onglets passent en bas comme sur un téléphone. Le thème suit le mode clair ou sombre de Gnome (Paramètres > Apparence), graphiques compris ; le PDF pour le médecin garde ses couleurs d'impression.
 
 - Couleurs : `app/theme.py`, copiées de `Theme.kt` de la tablette ; un test les compare quand le dépôt Android est à côté (`../GlucofiAndroid`) ou quand ce code est le sous-arbre `glucofi/` du dépôt Android. `app/style.css` n'emploie que des variables `var(--glucofi-*)`.
 - Polices : `app/fonts/`, licence SIL OFL 1.1 (texte dans `app/fonts/licences/` et dans À propos). Elles sont chargées par l'application, sans installation dans le système (Pango 1.56 ou plus récent, sinon la police du système). `python3 -m scripts.fonts` les régénère depuis google/fonts à un commit figé (nécessite `python3-fonttools`) ; la flèche → de l'historique du protocole vient de la police du système.
+- Icônes : Material Symbols arrondies, comme la tablette (`python3 -m scripts.symbols`, commit figé, licence Apache 2.0) ; renard et tache de pinceau convertis des illustrations de la tablette (`python3 -m scripts.illustrations`).
 - Lisibilité : contraste WCAG d'au moins 4,5:1 pour le texte et 3:1 pour les formes, en clair et en sombre, vérifié sur les couleurs par les tests et sur l'écran rendu par `python3 -m evals.theme_render`.
 
 ## Architecture
@@ -134,13 +138,18 @@ services/dosing/   moteur de titration pur et déterministe
 services/charts/   statistiques + figures matplotlib (écran et PDF), palette par figure (palette.py)
 services/report/   rapport PDF (reportlab)
 services/tablet/   synchronisation USB avec l'app Android (adb, contrat contracts/tablet_sync.py)
-app/               interface GTK4 / libadwaita (state.py, measures.py = logique sans GTK, testée ; icons/ = icônes des marqueurs)
+app/               interface GTK4 / libadwaita (state.py, measures.py, today.py = logique sans GTK, testée ; icons/ = icônes)
+  window.py        fenêtre : barre du haut, onglets, actions (Ctrl+R, PDF, tablette), tâches de fond
+  today_page.py    Aujourd'hui ; measures_page.py, charts_page.py, doses_page.py : les autres onglets
+  components.py    composants de la tablette (boutons, bandeaux, pilules, tuiles, onglets) ; art.py : logo, renard, soleil, lune
+  illustrations/   renard et tache de pinceau de la tablette (PNG)
   theme.py         couleurs claires et sombres de la tablette, variables libadwaita, contrastes, palette des graphiques
   style.css        feuille de style (uniquement des var(--glucofi-*))
   fonts/           Fredoka et Nunito (statiques, sous-ensemble latin) + licences OFL
 evals/             rejeu du moteur, onglet Mesures, rendu du thème, contre des oracles indépendants
 packaging/         règle udev, .desktop, icône, installation système
-scripts/           gate.sh (tests rapides), screenshots.py (captures de l'interface), fonts.py (polices),
+scripts/           gate.sh (tests rapides), screenshots.py (captures de l'interface), fonts.py (polices), symbols.py (icônes),
+                   illustrations.py (renard),
                    headless.sh (compositeur sans écran pour les captures et l'eval du thème)
 ```
 

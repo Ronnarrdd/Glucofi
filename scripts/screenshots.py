@@ -54,12 +54,14 @@ MEASURES_SHOTS = {"mesures-clair": (1000, False), "mesures-sombre": (1000, True)
 TITRATION_VIEWS = ("today", "doses", "preferences", "preferences-0.45", "preferences-1")
 # captures du README, en clair à 1000 px : fichier -> (scénario, vues à enchaîner, la dernière est capturée)
 README_SHOTS = {
-    "aujourdhui.png": ("default", ("measures",)),
+    "aujourdhui.png": ("titration", ("today",)),
+    "mesures.png": ("default", ("measures",)),
     "graphiques.png": ("default", ("charts",)),
     "premier-lancement.png": ("onboarding", ("today",)),
-    "deux-doses.png": ("titration", ("today",)),
     "protocole.png": ("titration", ("doses", "preferences", "preferences-0.45")),
 }
+# captures du README en sombre, même format
+README_DARK_SHOTS = {"aujourdhui-sombre.png": ("titration", ("today",))}
 
 
 def render(window: Gtk.Window) -> Gdk.Texture | None:
@@ -162,8 +164,12 @@ def demo_state(export: Path, scenario: str) -> AppState:
 
 
 def show(window, view: str) -> None:
-    """Affiche une vue : un onglet (PAGES), « preferences », ou « preferences-F » (dialogue défilé à la fraction F)."""
-    if view == "preferences":
+    """Affiche une vue : un onglet (PAGES), « detail » (« Voir le détail » d'Aujourd'hui), « preferences », ou
+    « preferences-F » (dialogue défilé à la fraction F)."""
+    if view == "detail":
+        window.stack.set_visible_child_name("today")
+        window.today.open_detail()
+    elif view == "preferences":
         window.show_preferences()
     elif view.startswith("preferences-"):
         _scroll_dialog(window, float(view.split("-")[1]))
@@ -190,9 +196,10 @@ def scenario_shots(scenario: str, out_dir: Path) -> list[Shot]:
 
 def readme_shots(out_dir: Path) -> list[Shot]:
     shots: list[Shot] = []
-    for name, (scenario, views) in README_SHOTS.items():
-        shots += [(scenario, view, None, WIDTH, False) for view in views[:-1]]
-        shots.append((scenario, views[-1], out_dir / name, WIDTH, False))
+    for dark, table in ((False, README_SHOTS), (True, README_DARK_SHOTS)):
+        for name, (scenario, views) in table.items():
+            shots += [(scenario, view, None, WIDTH, dark) for view in views[:-1]]
+            shots.append((scenario, views[-1], out_dir / name, WIDTH, dark))
     return shots
 
 

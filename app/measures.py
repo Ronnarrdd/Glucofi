@@ -39,7 +39,6 @@ MEAL_FILTERS = (
 
 # icônes de app/icons, sur le modèle des marqueurs du lecteur (pomme, trognon...)
 MARKER_ICONS = {
-    "all": "view-list-symbolic",
     "fasting": "glucofi-meal-fasting-symbolic",
     "before_meal": "glucofi-meal-before-symbolic",
     "after_meal": "glucofi-meal-after-symbolic",
@@ -51,15 +50,11 @@ MARKER_ICONS = {
 
 LEVELS = ("low", "in", "high")
 LEVEL_CSS = {"low": "error", "in": "success", "high": "warning"}
-LEVEL_ICONS = {"low": "go-down-symbolic", "in": None, "high": "go-up-symbolic"}
-RETAINED_ICON = "daytime-sunrise-symbolic"
+LEVEL_ICONS = {"low": "glucofi-arrow-down-symbolic", "in": None, "high": "glucofi-arrow-up-symbolic"}
 RETAINED_TOOLTIP = "Glycémie du matin retenue pour l'ajustement de la dose du soir"
-EVENING_RETAINED_ICON = "daytime-sunset-symbolic"
 EVENING_RETAINED_TOOLTIP = "Glycémie du soir retenue pour l'ajustement de la dose du matin"
-EXCLUDED_ICON = "action-unavailable-symbolic"
 EXCLUDED_TOOLTIP = "Écartée de l'ajustement de la dose par une note"
 REFUSED_TOOLTIP = "Marquée à écarter, mais sous le seuil bas : une glycémie basse compte toujours pour l'ajustement"
-NOTE_ICON = "document-edit-symbolic"
 
 _MEAL_KEYS = {key for key, _label in MEAL_FILTERS}
 
@@ -86,7 +81,6 @@ class MeasureLine:
     excluded: bool = False
     exclusion_refused: bool = False
     reading: Reading | None = field(default=None, compare=False)
-    retained_icon: str = RETAINED_ICON
     retained_tooltip: str = RETAINED_TOOLTIP
 
     @property
@@ -145,6 +139,11 @@ class RangeSegment:
     count: int
     pct: str
     span: int
+
+    @property
+    def legend(self) -> str:
+        """« Sous l'objectif < 0,80 g/L : 6 % (3) », légende de la tablette."""
+        return f"{self.label} {self.bounds} : {self.pct} ({self.count})"
 
 
 @dataclass(frozen=True)
@@ -282,7 +281,6 @@ def _line(
         excluded=excluded_from_dosing(reading, settings),
         exclusion_refused=exclusion_refused(reading, settings),
         reading=reading,
-        retained_icon=EVENING_RETAINED_ICON if evening else RETAINED_ICON,
         retained_tooltip=EVENING_RETAINED_TOOLTIP if evening else RETAINED_TOOLTIP,
     )
 

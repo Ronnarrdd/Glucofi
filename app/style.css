@@ -1,6 +1,7 @@
-/* Glucofi : thème de la tablette (Glucofi pour Android) sur libadwaita.
+/* Glucofi : composants de la tablette (Glucofi pour Android, DESIGN.md) sur libadwaita.
    Aucune couleur écrite ici : seulement var(--glucofi-*), que app/theme.py déclare en clair et en sombre
    avec les variables de libadwaita qu'elles remplacent (fenêtre, cartes, accent, erreur, réussite...).
+   Tailles en points : 12pt = 16 px à 96 ppp, et le texte suit le réglage « grands caractères ».
    Dans GTK, la priorité du fournisseur passe avant la spécificité : chaque règle vise ses seuls widgets. */
 
 /* Polices : Nunito pour ce qui se lit ou se touche, Fredoka pour les titres et les chiffres */
@@ -10,41 +11,194 @@ window, tooltip {
   font-weight: 500;
 }
 
+.display-medium, .display-small, .headline-large, .headline-small, .dose-number,
 .title-1, .title-2, .title-3, .title-4,
-statuspage > scrolledwindow > viewport > box > clamp > box > .title,
-dialog.alert .message-area > .heading-bin label,
-.dose-value, .stat-value, .measure-day-title {
+dialog.alert .message-area > .heading-bin label {
   font-family: "Fredoka", sans-serif;
   font-weight: 600;
 }
 
+.title-large,
 preferencesgroup > box > box.header > box.labels > label.heading {
   font-family: "Fredoka", sans-serif;
   font-weight: 500;
-  font-size: 1.2em;
 }
 
-/* Texte secondaire : encre secondaire opaque, lisible sur le sauge, le blanc et les pastels */
+/* Échelle typographique de la tablette (Material 3, familles et graisses de Glucofi) */
 
-label.dim-label, label.dimmed, row label.subtitle {
+.dose-number { font-size: 72pt; line-height: 1.08; }
+.display-medium { font-size: 33.75pt; line-height: 1.156; }
+.display-small { font-size: 27pt; line-height: 1.222; }
+.headline-large { font-size: 24pt; line-height: 1.25; }
+.headline-small { font-size: 18pt; line-height: 1.333; }
+.title-large,
+preferencesgroup > box > box.header > box.labels > label.heading { font-size: 16.5pt; line-height: 1.273; }
+.title-medium { font-family: "Nunito", sans-serif; font-size: 12pt; font-weight: 700; line-height: 1.5; letter-spacing: 0.15px; }
+.title-small { font-family: "Nunito", sans-serif; font-size: 10.5pt; font-weight: 700; line-height: 1.429; letter-spacing: 0.1px; }
+.body-large { font-size: 12pt; line-height: 1.5; letter-spacing: 0.15px; }
+.body-medium { font-size: 10.5pt; line-height: 1.429; letter-spacing: 0.15px; }
+.body-small { font-size: 9pt; line-height: 1.333; letter-spacing: 0.2px; }
+.label-large { font-family: "Nunito", sans-serif; font-size: 10.5pt; font-weight: 700; letter-spacing: 0.1px; }
+.label-medium { font-family: "Nunito", sans-serif; font-size: 9pt; font-weight: 700; letter-spacing: 0.3px; }
+.numeric, .level-value .value, .dose-number { font-feature-settings: "tnum"; }
+
+/* Encres : texte secondaire opaque, lisible sur le sauge, le blanc et les pastels */
+
+.muted, label.dim-label, label.dimmed, row label.subtitle {
   opacity: 1;
   color: var(--glucofi-on-surface-variant);
 }
 
-/* Glycémie écartée de l'ajustement : grisée par la teinte, pas par la transparence */
-row.dim-label {
-  opacity: 1;
+.ink { color: var(--glucofi-on-surface); }
+.accent-icon { color: var(--glucofi-primary); }
+
+label.error {
+  color: var(--glucofi-level-low);
 }
 
-row.dim-label label {
-  color: var(--glucofi-on-surface-variant);
+/* Barre du haut : plate sur le sauge, logo et nom à gauche, onglets en pilules au centre */
+
+headerbar.glucofi-header {
+  min-height: 64px;
+  padding: 0 12px;
+  box-shadow: none;
 }
 
-/* Surfaces : plates et très arrondies (32 tuiles, 24 cartes, pilule pour le reste), jamais d'ombre */
+headerbar.glucofi-header button.header-action {
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 9999px;
+}
 
-.card, list.boxed-list, list.boxed-list-separate > row {
+.navbar button.nav-item {
+  border-radius: 9999px;
+  padding: 8px 18px;
+  min-height: 32px;
+  background: none;
+  color: var(--glucofi-on-surface);
+  box-shadow: none;
+}
+
+.navbar button.nav-item:hover {
+  background-color: var(--glucofi-secondary-container);
+  color: var(--glucofi-on-secondary-container);
+}
+
+.navbar button.nav-item:checked {
+  background-color: var(--glucofi-primary);
+  color: var(--glucofi-on-primary);
+}
+
+.nav-label {
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 10.5pt;
+}
+
+.navbar.compact button.nav-item {
+  padding: 6px 4px;
+  min-height: 56px;
+  border-radius: 20px;
+}
+
+.navbar.compact .nav-label {
+  font-size: 9pt;
+  letter-spacing: 0.3px;
+}
+
+.bottom-nav {
+  background-color: var(--glucofi-card);
+  padding: 8px 8px 10px 8px;
+}
+
+/* Bannière du renard : rose, encre prune, date en vieux rose */
+
+foxbanner.fox-banner {
+  background-color: var(--glucofi-banner);
+  color: var(--glucofi-banner-ink);
+  border-radius: 32px;
+}
+
+foxbanner .banner-title {
+  color: var(--glucofi-banner-ink);
+}
+
+foxbanner .banner-subtitle {
+  color: var(--glucofi-banner-muted);
+}
+
+.meter-chip {
+  background-color: var(--glucofi-meter);
+  color: var(--glucofi-on-meter);
+  border-radius: 9999px;
+  padding: 8px 14px;
+}
+
+/* Boutons : pilule ; plein bleu canard pour l'action principale du bloc, 56 px pour lire et valider */
+
+button.pill-button,
+button.suggested-action, button.destructive-action, button.pill,
+dialog.alert .response-area > button {
+  border-radius: 9999px;
+}
+
+button.pill-button {
+  min-height: 40px;
+  padding: 4px 20px;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 10.5pt;
+}
+
+button.pill-button.tall {
+  min-height: 48px;
+  padding: 4px 24px;
+  font-size: 12pt;
+}
+
+button.pill-button.tonal {
+  background-color: var(--glucofi-secondary-container);
+  color: var(--glucofi-on-secondary-container);
+}
+
+button.pill-button.outlined {
+  background: none;
+  color: var(--glucofi-primary);
+  border: 1px solid var(--glucofi-outline);
+}
+
+button.pill-button.outlined:hover, button.pill-button.text:hover {
+  background-color: var(--glucofi-secondary-container);
+}
+
+button.pill-button.text {
+  background: none;
+  color: var(--glucofi-primary);
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+button.pill-button.text.destructive {
+  color: var(--glucofi-level-low);
+}
+
+button.icon-button {
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 9999px;
+}
+
+/* Surfaces : plates et très arrondies (32 tuiles et bannière, 24 cartes, pilule pour le reste), jamais d'ombre */
+
+.section-card, .card, list.boxed-list, list.boxed-list-separate > row {
   border-radius: 24px;
   box-shadow: none;
+}
+
+.section-card {
+  background-color: var(--glucofi-card);
+  color: var(--glucofi-on-surface);
+  padding: 24px;
 }
 
 list.boxed-list > row:first-child {
@@ -57,14 +211,19 @@ list.boxed-list > row:last-child {
   border-bottom-right-radius: 24px;
 }
 
+separator.divider {
+  background-color: var(--glucofi-outline-variant);
+  min-height: 1px;
+}
+
 floating-sheet > sheet,
 dialog-host > dialog.alert sheet {
-  border-radius: 28px;
+  border-radius: 32px;
 }
 
 dialog-host > dialog.alert sheet .body-scrolled-window > viewport {
-  border-top-left-radius: 28px;
-  border-top-right-radius: 28px;
+  border-top-left-radius: 32px;
+  border-top-right-radius: 32px;
 }
 
 toast {
@@ -74,200 +233,180 @@ toast {
   border-radius: 16px;
 }
 
-/* Boutons : pilule ; l'action principale en bleu canard plein */
+/* Lignes cliquables (mesures, glycémies de référence) : toute la ligne ouvre la note */
 
-button.suggested-action, button.destructive-action, button.pill,
-dialog.alert .response-area > button {
-  border-radius: 9999px;
+button.list-row {
+  background: none;
+  color: var(--glucofi-on-surface);
+  border-radius: 16px;
+  padding: 6px 8px;
+  margin: 0 -8px;
+  min-height: 56px;
+  font-weight: 500;
 }
 
-/* Onglets : la destination active en pilule bleu canard, comme le panneau de la tablette */
-
-viewswitcher button.toggle {
-  border-radius: 9999px;
+button.list-row:hover {
+  background-color: var(--glucofi-surface-container-highest);
 }
 
-viewswitcher button.toggle:checked {
+button.list-row image.muted {
+  color: var(--glucofi-on-surface-variant);
+}
+
+/* Bandeaux : icône dans une pastille ronde, texte en body-large */
+
+.notice {
+  border-radius: 24px;
+  padding: 12px 16px;
+}
+
+.notice-icon {
+  border-radius: 9999px;
+  padding: 8px;
+}
+
+.notice-info { background-color: var(--glucofi-secondary-container); color: var(--glucofi-on-secondary-container); }
+.notice-info .notice-icon { background-color: var(--glucofi-notice-info-circle); }
+.notice-success { background-color: var(--glucofi-level-in-container); color: var(--glucofi-level-in-on-container); }
+.notice-success .notice-icon { background-color: var(--glucofi-notice-success-circle); }
+.notice-warning { background-color: var(--glucofi-level-high-container); color: var(--glucofi-level-high-on-container); }
+.notice-warning .notice-icon { background-color: var(--glucofi-notice-warning-circle); }
+.notice-danger { background-color: var(--glucofi-error-container); color: var(--glucofi-on-error-container); }
+.notice-danger .notice-icon { background-color: var(--glucofi-notice-danger-circle); }
+
+.notice button.icon-button {
+  color: inherit;
+}
+
+/* Tuiles Matin (pêche) et Soir (lavande) : dose en très gros, pastille d'état, « Valider » pleine largeur */
+
+.moment-tile {
+  border-radius: 32px;
+  padding: 24px;
+}
+
+.moment-tile.small {
+  border-radius: 24px;
+  padding: 20px 24px;
+}
+
+.moment-morning { background-color: var(--glucofi-morning-tile); color: var(--glucofi-morning-ink); }
+.moment-evening { background-color: var(--glucofi-evening-tile); color: var(--glucofi-evening-ink); }
+.moment-morning .dose-number, .moment-morning .dose { color: var(--glucofi-morning-dose); }
+.moment-evening .dose-number, .moment-evening .dose { color: var(--glucofi-evening-dose); }
+
+label.status-pill {
+  border-radius: 9999px;
+  padding: 6px 16px;
+}
+
+.moment-morning label.status-pill { color: var(--glucofi-morning-muted); }
+.moment-evening label.status-pill { color: var(--glucofi-evening-muted); }
+
+.moment-tile label.status-pill.proposed {
+  background-color: var(--glucofi-card);
+  color: var(--glucofi-on-surface);
+}
+
+/* Dernière mesure : bandeau blanc d'une ligne */
+
+.last-reading {
+  background-color: var(--glucofi-card);
+  color: var(--glucofi-on-surface);
+  border-radius: 24px;
+  padding: 16px 24px;
+}
+
+/* Glycémies : la couleur dit le niveau, toujours avec une flèche ou un libellé */
+
+.level-chip {
+  border-radius: 9999px;
+  padding: 6px 12px;
+}
+
+.level-chip.level-low { background-color: var(--glucofi-level-low-container); color: var(--glucofi-level-low-on-container); }
+.level-chip.level-in { background-color: var(--glucofi-level-in-container); color: var(--glucofi-level-in-on-container); }
+.level-chip.level-high { background-color: var(--glucofi-level-high-container); color: var(--glucofi-level-high-on-container); }
+.level-chip.dimmed { background-color: var(--glucofi-surface-container-highest); color: var(--glucofi-on-surface-variant); }
+
+.level-value.level-low, .level-ink.level-low { color: var(--glucofi-level-low); }
+.level-value.level-in, .level-ink.level-in { color: var(--glucofi-level-in); }
+.level-value.level-high, .level-ink.level-high { color: var(--glucofi-level-high); }
+.level-value.dimmed { color: var(--glucofi-on-surface-variant); }
+
+/* Étiquettes : information, pas action */
+
+label.tag {
+  background-color: var(--glucofi-secondary-container);
+  color: var(--glucofi-on-secondary-container);
+  border-radius: 9999px;
+  padding: 4px 12px;
+}
+
+label.tag.tag-current {
+  background-color: var(--glucofi-primary-container);
+  color: var(--glucofi-on-primary-container);
+}
+
+/* Filtres : pilules blanches sur le sauge, le choix en bleu canard avec sa coche ; bord droit estompé */
+
+button.filter-chip {
+  background-color: var(--glucofi-card);
+  color: var(--glucofi-on-surface);
+  border-radius: 9999px;
+  min-height: 40px;
+  padding: 4px 16px;
+  box-shadow: none;
+}
+
+button.filter-chip:hover {
+  background-color: var(--glucofi-secondary-container);
+  color: var(--glucofi-on-secondary-container);
+}
+
+button.filter-chip:checked {
   background-color: var(--glucofi-primary);
   color: var(--glucofi-on-primary);
 }
 
-toolbarview > .bottom-bar {
-  background-color: var(--glucofi-card);
+scrolledwindow.filter-chips undershoot.right {
+  background-image: linear-gradient(to left, var(--glucofi-background), transparent);
 }
 
-/* Filtres : pilules blanches (toggle-group.round) sur le sauge, le choix en bleu canard */
-
-toggle-group {
-  background-color: var(--glucofi-card);
-}
-
-toggle-group > toggle:checked {
-  box-shadow: none;
-}
-
-dropdown > button {
-  background-color: var(--glucofi-card);
-  border-radius: 9999px;
-  padding-left: 14px;
-  padding-right: 12px;
-}
-
-/* Aujourd'hui : tuile pêche du matin, tuile lavande du soir, dose en très gros */
-
-.dose-card {
-  padding: 22px 12px 24px 12px;
-  border-radius: 32px;
-}
-
-.dose-value {
-  font-size: 52px;
-}
-
-.moment-morning {
-  background-color: var(--glucofi-morning-tile);
-  color: var(--glucofi-morning-ink);
-}
-
-.moment-morning .dose-value {
-  color: var(--glucofi-morning-dose);
-}
-
-.moment-morning label.dim-label {
-  color: var(--glucofi-morning-muted);
-}
-
-.moment-evening {
-  background-color: var(--glucofi-evening-tile);
-  color: var(--glucofi-evening-ink);
-}
-
-.moment-evening .dose-value {
-  color: var(--glucofi-evening-dose);
-}
-
-.moment-evening label.dim-label {
-  color: var(--glucofi-evening-muted);
-}
-
-/* « proposé (actuellement 10 UI) » : la pilule blanche de la tablette, posée sur la tuile */
-label.status-pill {
-  background-color: var(--glucofi-card);
-  color: var(--glucofi-on-surface);
-  border-radius: 9999px;
-  padding: 4px 14px;
-  margin-top: 6px;
-  font-weight: 700;
-}
-
-/* Bandeaux d'alerte : le danger (hypoglycémie) passe toujours en tête, dans la couleur d'erreur */
-
-list.boxed-list.notice-danger {
-  background-color: var(--glucofi-level-low-container);
-  color: var(--glucofi-level-low-on-container);
-}
-
-list.boxed-list.notice-warning {
-  background-color: var(--glucofi-level-high-container);
-  color: var(--glucofi-level-high-on-container);
-}
-
-list.boxed-list.notice-info {
-  background-color: var(--glucofi-secondary-container);
-  color: var(--glucofi-on-secondary-container);
-}
-
-/* Étiquettes : information, pas action */
-
-.tag-current {
-  background-color: var(--glucofi-primary-container);
-  color: var(--glucofi-on-primary-container);
-  border-radius: 9999px;
-  padding: 3px 12px;
-  font-weight: 700;
-  font-size: 0.9em;
+scrolledwindow.filter-chips undershoot.left {
+  background-image: linear-gradient(to right, var(--glucofi-background), transparent);
 }
 
 /* Tuiles de synthèse : pastels posés sur le fond, jamais dans une carte */
 
-.stat-tile, .summary-tile {
+.stat-tile {
   border-radius: 24px;
   padding: 16px 20px;
 }
 
-.pastel-sky {
-  background-color: var(--glucofi-pastel-sky);
-  color: var(--glucofi-on-pastel);
-}
-
-.pastel-mint {
-  background-color: var(--glucofi-pastel-mint);
-  color: var(--glucofi-on-pastel);
-}
-
-.pastel-lavender {
-  background-color: var(--glucofi-pastel-lavender);
-  color: var(--glucofi-on-pastel);
-}
-
-.pastel-peach {
-  background-color: var(--glucofi-pastel-peach);
-  color: var(--glucofi-on-pastel);
-}
-
-.pastel-sage {
-  background-color: var(--glucofi-secondary-container);
-  color: var(--glucofi-on-secondary-container);
-}
+.pastel-sky { background-color: var(--glucofi-pastel-sky); color: var(--glucofi-on-pastel); }
+.pastel-mint { background-color: var(--glucofi-pastel-mint); color: var(--glucofi-on-pastel); }
+.pastel-lavender { background-color: var(--glucofi-pastel-lavender); color: var(--glucofi-on-pastel); }
+.pastel-peach { background-color: var(--glucofi-pastel-peach); color: var(--glucofi-on-pastel); }
+.pastel-sage { background-color: var(--glucofi-secondary-container); color: var(--glucofi-on-secondary-container); }
 
 .summary-tiles flowboxchild {
   padding: 0;
 }
 
-.stat-label {
-  font-weight: 700;
-}
-
-.stat-value {
-  font-size: 28px;
-}
-
-.chart-card {
-  background-color: var(--glucofi-card);
-  border-radius: 24px;
-  padding: 12px;
-}
-
-/* Mesures : la couleur ne sert qu'au niveau de la glycémie, toujours avec une flèche ou un libellé */
-
-.summary-card {
-  padding: 20px;
-}
+/* Répartition : barre pilule de 20 px, un segment par niveau, légende fléchée */
 
 .range-bar {
   border-radius: 9999px;
-  background-color: var(--glucofi-surface-container-highest);
 }
 
 .range-segment {
   min-height: 20px;
 }
 
-.range-segment + .range-segment {
-  margin-left: 3px;
-}
-
-.range-segment.level-low, .legend-dot.level-low {
-  background-color: var(--glucofi-level-low);
-}
-
-.range-segment.level-in, .legend-dot.level-in {
-  background-color: var(--glucofi-level-in);
-}
-
-.range-segment.level-high, .legend-dot.level-high {
-  background-color: var(--glucofi-level-high);
-}
+.range-segment.level-low, .legend-dot.level-low { background-color: var(--glucofi-level-low); }
+.range-segment.level-in, .legend-dot.level-in { background-color: var(--glucofi-level-in); }
+.range-segment.level-high, .legend-dot.level-high { background-color: var(--glucofi-level-high); }
 
 .legend-dot {
   min-width: 12px;
@@ -275,65 +414,64 @@ list.boxed-list.notice-info {
   border-radius: 9999px;
 }
 
-.measure-day-title {
-  font-size: 19px;
+/* Dialogues : détail sur fond blanc ; formulaires sur le sauge, sections blanches, champs à contour */
+
+dialog.detail-sheet {
+  --dialog-bg-color: var(--glucofi-card);
 }
 
-.measure-row .title {
-  font-weight: 700;
-  font-feature-settings: "tnum";
+dialog.detail-sheet sheet {
+  background-color: var(--glucofi-card);
 }
 
-.marker-badge {
-  min-width: 34px;
-  min-height: 34px;
-  border-radius: 9999px;
-  background-color: var(--glucofi-secondary-container);
-  color: var(--glucofi-on-surface-variant);
+dialog.glucofi-form {
+  --dialog-bg-color: var(--glucofi-background);
 }
 
-.marker-badge.marker-fasting {
-  background-color: var(--glucofi-primary-container);
-  color: var(--glucofi-on-primary-container);
+preferencesgroup.form-section {
+  background-color: var(--glucofi-card);
+  color: var(--glucofi-on-surface);
+  border-radius: 24px;
+  padding: 24px;
 }
 
-.marker-badge.marker-none {
+preferencesgroup.form-section list.boxed-list {
   background: none;
+  box-shadow: none;
 }
 
-.morning-chip, .retained-chip, .excluded-chip, .refused-chip {
-  padding: 3px 10px;
+preferencesgroup.form-section list.boxed-list > row {
+  background-color: var(--glucofi-card);
+  border: 1px solid var(--glucofi-outline);
+  border-radius: 16px;
+  box-shadow: none;
+  margin-top: 12px;
+  min-height: 56px;
+}
+
+preferencesgroup.form-section list.boxed-list > row.error {
+  border-color: var(--glucofi-level-low);
+}
+
+preferencesgroup.form-section list.boxed-list > row.button {
+  border-style: dashed;
+}
+
+.unit-suffix {
+  color: var(--glucofi-on-surface-variant);
+  font-weight: 700;
+}
+
+.stepper {
+  margin-top: 12px;
+}
+
+button.stepper-button {
+  min-width: 56px;
+  min-height: 56px;
   border-radius: 9999px;
   background-color: var(--glucofi-secondary-container);
   color: var(--glucofi-on-secondary-container);
-}
-
-.refused-chip {
-  background-color: var(--glucofi-level-high-container);
-  color: var(--glucofi-level-high-on-container);
-}
-
-.morning-chip.level-low {
-  background-color: var(--glucofi-level-low-container);
-  color: var(--glucofi-level-low-on-container);
-}
-
-.morning-chip.level-in {
-  background-color: var(--glucofi-level-in-container);
-  color: var(--glucofi-level-in-on-container);
-}
-
-.morning-chip.level-high {
-  background-color: var(--glucofi-level-high-container);
-  color: var(--glucofi-level-high-on-container);
-}
-
-.note-button {
-  color: var(--glucofi-outline);
-}
-
-.note-button.has-note {
-  color: var(--glucofi-primary);
 }
 
 .note-tag {
@@ -346,26 +484,4 @@ list.boxed-list.notice-info {
 .note-tag:checked {
   background-color: var(--glucofi-primary);
   color: var(--glucofi-on-primary);
-}
-
-.value-pill {
-  padding: 4px 12px;
-  border-radius: 9999px;
-  font-weight: 700;
-  font-size: 15px;
-}
-
-.value-pill.level-low {
-  background-color: var(--glucofi-level-low-container);
-  color: var(--glucofi-level-low-on-container);
-}
-
-.value-pill.level-in {
-  background-color: var(--glucofi-level-in-container);
-  color: var(--glucofi-level-in-on-container);
-}
-
-.value-pill.level-high {
-  background-color: var(--glucofi-level-high-container);
-  color: var(--glucofi-level-high-on-container);
 }

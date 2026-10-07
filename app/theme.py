@@ -48,6 +48,14 @@ LIGHT = {
     "outline-variant": "#D3DCD6",
     "inverse-surface": "#233233",
     "inverse-on-surface": "#EDF3EF",
+    "error-container": "#FCDDDA",
+    "on-error-container": "#5F1410",
+    "banner": "#FFE7E3",
+    "banner-blob": "#FCCEC9",
+    "banner-ink": "#2B1B1E",
+    "banner-muted": "#6A4B50",
+    "meter": "#CFEBDD",
+    "on-meter": "#12402F",
     "morning-tile": "#FEDCC0",
     "morning-ink": "#3B2414",
     "morning-muted": "#6B4A33",
@@ -93,6 +101,14 @@ DARK = {
     "outline-variant": "#34403F",
     "inverse-surface": "#E3ECE9",
     "inverse-on-surface": "#233233",
+    "error-container": "#6B1C17",
+    "on-error-container": "#FFDAD6",
+    "banner": "#3E2A2E",
+    "banner-blob": "#57393F",
+    "banner-ink": "#FFE4E0",
+    "banner-muted": "#E8C3C6",
+    "meter": "#1E4A3B",
+    "on-meter": "#C6F0DD",
     "morning-tile": "#4A3324",
     "morning-ink": "#FFE3CF",
     "morning-muted": "#E9C3A8",
@@ -117,6 +133,18 @@ DARK = {
     "level-high-on-container": "#FFDDBF",
     "on-level": "#101819",
 }
+
+# dessins du soleil et de la lune (ic_doodle_sun.xml, ic_doodle_moon.xml) : mêmes aplats en clair et en sombre
+DOODLE = {"sun": "#FBB531", "sun-ray": "#F29A1F", "moon": "#F6D27A"}
+
+# bandeaux (Notice de la tablette) : (fond, texte) ; l'icône est posée sur le texte à 10 % sur le fond
+NOTICE_KINDS = {
+    "info": ("secondary-container", "on-secondary-container"),
+    "success": ("level-in-container", "level-in-on-container"),
+    "warning": ("level-high-container", "level-high-on-container"),
+    "danger": ("error-container", "on-error-container"),
+}
+NOTICE_CIRCLE_ALPHA = 0.10
 
 # variable de libadwaita -> jeton : les widgets standard (fenêtre, cartes, listes, dialogues, accent,
 # couleurs d'état) prennent le thème sans règle propre. Les niveaux de glycémie remplacent erreur,
@@ -176,6 +204,11 @@ CONTRAST_PAIRS = [
     ("on-secondary-container", "secondary-container", TEXT),
     ("inverse-on-surface", "inverse-surface", TEXT),
     ("inverse-primary", "inverse-surface", TEXT),
+    ("on-error-container", "error-container", TEXT),
+    *[(ink, bg, TEXT) for ink in ("banner-ink", "banner-muted") for bg in ("banner", "banner-blob")],
+    ("on-meter", "meter", TEXT),
+    *[(ink, bg, TEXT) for bg, ink in NOTICE_KINDS.values()],
+    *[(ink, f"notice-{kind}-circle", SHAPE) for kind, (_bg, ink) in NOTICE_KINDS.items()],
     *[(f"{moment}-{ink}", f"{moment}-tile", TEXT) for moment in ("morning", "evening") for ink in ("ink", "muted", "dose")],
     *[("on-surface", f"{moment}-tile", TEXT) for moment in ("morning", "evening")],
     *[("on-pastel", bg, TEXT) for bg in SUMMARY_PASTELS],
@@ -184,15 +217,30 @@ CONTRAST_PAIRS = [
     *[(f"level-{level}", f"level-{level}-container", TEXT) for level in LEVEL_KEYS],
     *[("on-level", f"level-{level}", TEXT) for level in LEVEL_KEYS],
     # formes : bouton plein, contour des champs et de l'icône de note, points et segments des graphiques
-    *[("primary", bg, SHAPE) for bg in ("morning-tile", "evening-tile")],
+    *[("primary", bg, SHAPE) for bg in ("morning-tile", "evening-tile", "banner")],
     *[("outline", bg, SHAPE) for bg in ("background", "card", "surface-container-high")],
     ("tertiary", "card", SHAPE),
     *[(f"level-{level}", "surface-container-highest", SHAPE) for level in LEVEL_KEYS],
 ]
 
 
+def blend(top: str, bottom: str, alpha: float) -> str:
+    """`top` posé à `alpha` sur `bottom`, en couleur opaque (#RRGGBB)."""
+    a, b = (tuple(int(c.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) for c in (top, bottom))
+    return "#" + "".join(f"{round(x * alpha + y * (1 - alpha)):02X}" for x, y in zip(a, b))
+
+
+def derived(colors: dict[str, str]) -> dict[str, str]:
+    """Jetons calculés depuis la palette : pastille d'icône des bandeaux."""
+    return {
+        f"notice-{kind}-circle": blend(colors[ink], colors[bg], NOTICE_CIRCLE_ALPHA)
+        for kind, (bg, ink) in NOTICE_KINDS.items()
+    }
+
+
 def palette(dark: bool) -> dict[str, str]:
-    return DARK if dark else LIGHT
+    base = DARK if dark else LIGHT
+    return {**base, **derived(base)}
 
 
 def tokens_css(dark: bool) -> str:

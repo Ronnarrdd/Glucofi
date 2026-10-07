@@ -17,6 +17,14 @@ ROOT = Path(__file__).resolve().parents[2]
 ANDROID_THEME = Path("app/src/main/kotlin/fr/librenard/glucofi/ui/Theme.kt")
 # le dépôt Android voisin, ou le dépôt Android qui contient ce code en sous-arbre glucofi/
 ANDROID_CANDIDATES = (ROOT.parent / "GlucofiAndroid" / ANDROID_THEME, ROOT.parent / ANDROID_THEME)
+ANDROID_COMMON = ANDROID_THEME.with_name("Common.kt")
+ANDROID_DRAWABLE = Path("app/src/main/res/drawable")
+# classes de libadwaita et de GTK que l'application pose sans les redéfinir
+ADWAITA_CLASSES = {
+    "suggested-action", "destructive-action", "flat", "boxed-list", "heading", "numeric", "dimmed", "circular",
+    "error", "title-1", "title-2", "title-3", "title-4", "caption", "pill", "card", "property", "toolbar",
+    "start", "end",
+}
 CSS = theme.STYLE_CSS.read_text(encoding="utf-8")
 CSS_CODE = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
 NAMED_COLORS = r"\b(?:white|black|red|green|blue|orange|purple|yellow|gray|grey|pink|brown|cyan|magenta)\b"
@@ -52,7 +60,20 @@ class PaletteTest(unittest.TestCase):
 
     def test_contrast_pairs_and_adwaita_map_name_real_tokens(self):
         names = {name for fg, bg, _ in theme.CONTRAST_PAIRS for name in (fg, bg)} | set(theme.ADWAITA.values())
-        self.assertEqual(names - set(theme.LIGHT), set())
+        self.assertEqual(names - set(theme.palette(False)), set())
+
+    def test_every_notice_ink_is_checked_on_its_background_and_icon_circle(self):
+        pairs = {(fg, bg) for fg, bg, _ in theme.CONTRAST_PAIRS}
+        for kind, (bg, ink) in theme.NOTICE_KINDS.items():
+            self.assertIn((ink, bg), pairs, kind)
+            self.assertIn((ink, f"notice-{kind}-circle"), pairs, kind)
+
+    def test_notice_circle_is_the_ink_at_ten_percent_on_the_background(self):
+        self.assertEqual(theme.blend("#000000", "#FFFFFF", 0.10), "#E6E6E6")
+        for dark in (False, True):
+            colors = theme.palette(dark)
+            for kind, (bg, ink) in theme.NOTICE_KINDS.items():
+                self.assertEqual(colors[f"notice-{kind}-circle"], theme.blend(colors[ink], colors[bg], theme.NOTICE_CIRCLE_ALPHA))
 
     def test_contrast_matches_wcag_reference_values(self):
         self.assertAlmostEqual(theme.contrast("#000000", "#FFFFFF"), 21.0, places=2)
@@ -133,8 +154,8 @@ class AndroidParityTest(unittest.TestCase):
             for suffix, value in zip(("", "-container", "-on-container"), tone.groups()):
                 colors[f"level-{level}{suffix}"] = f"#{value.upper()}"
         glucofi = self.block(f"{prefix}Glucofi")
-        colors["card"] = "#" + re.search(r"card = Color\(0xFF(\w{6})\)", glucofi).group(1).upper()
-        colors["on-pastel"] = "#" + re.search(r"onPastel = Color\(0xFF(\w{6})\)", glucofi).group(1).upper()
+        for key, value in re.findall(r"^\s*(\w+) = Color\(0xFF(\w{6})\),\s*$", glucofi, re.M):
+            colors[re.sub(r"([A-Z])", r"-\1", key).lower()] = f"#{value.upper()}"
         for moment in ("morning", "evening"):
             tone = re.search(rf"^\s*{moment} = MomentTone\((.*)\),\s*$", glucofi, re.M).group(1)
             for part, value in re.findall(r"(\w+) = Color\(0xFF(\w{6})\)", tone):
@@ -149,9 +170,46 @@ class AndroidParityTest(unittest.TestCase):
             android = self.android(dark)
             pc = theme.palette(dark)
             shared = set(android) & set(pc)
-            self.assertGreaterEqual(len(shared), 40)
+            self.assertGreaterEqual(len(shared), 48)
+            self.assertLessEqual(
+                {"card", "on-pastel", "banner", "banner-blob", "banner-ink", "banner-muted", "meter", "on-meter",
+                 "error-container", "on-error-container"},
+                shared,
+            )
             diff = {token: (pc[token], android[token]) for token in shared if pc[token] != android[token]}
             self.assertEqual(diff, {}, "sombre" if dark else "clair")
+
+    def android_file(self, relative: Path) -> str:
+        for theme_path in ANDROID_CANDIDATES:
+            root = Path(str(theme_path)[: -len(str(ANDROID_THEME))])
+            if (root / relative).is_file():
+                return (root / relative).read_text(encoding="utf-8")
+        self.skipTest(f"{relative} introuvable")
+
+    def test_logo_paths_are_the_tablet_ones(self):
+        from app.art import MarkPaths
+
+        common = self.android_file(ANDROID_COMMON)
+        for name in ("TILE", "BAND", "CURVE", "DROP"):
+            match = re.search(rf'const val {name} = "([^"]+)"', common)
+            self.assertIsNotNone(match, name)
+            self.assertEqual(getattr(MarkPaths, name), match.group(1), name)
+
+    def test_sun_and_moon_are_the_tablet_doodles(self):
+        from app.art import DoodlePaths
+
+        def drawable(name):
+            xml = self.android_file(ANDROID_DRAWABLE / name)
+            paths = re.findall(r'android:pathData="([^"]+)"', xml)
+            colors = re.findall(r'android:(?:fill|stroke)Color="#FF(\w{6})"', xml)
+            return paths, [f"#{c.upper()}" for c in colors]
+
+        sun, sun_colors = drawable("ic_doodle_sun.xml")
+        self.assertEqual(sun, [DoodlePaths.SUN_DISC, DoodlePaths.SUN_RAYS])
+        self.assertEqual(sun_colors, [theme.DOODLE["sun"], theme.DOODLE["sun-ray"]])
+        moon, moon_colors = drawable("ic_doodle_moon.xml")
+        self.assertEqual(moon, list(DoodlePaths.MOON))
+        self.assertEqual(set(moon_colors), {theme.DOODLE["moon"]})
 
 
 class StyleSheetTest(unittest.TestCase):
@@ -163,18 +221,38 @@ class StyleSheetTest(unittest.TestCase):
     def test_every_variable_used_is_declared(self):
         used = set(re.findall(r"var\(--glucofi-([\w-]+)\)", CSS_CODE))
         self.assertTrue(used)
-        self.assertEqual(used - set(theme.LIGHT), set())
+        self.assertEqual(used - set(theme.palette(False)), set())
 
-    def test_every_pastel_and_level_class_has_a_rule(self):
-        for name in (*theme.SUMMARY_PASTELS, "pastel-sage", "moment-morning", "moment-evening",
-                     "notice-danger", "notice-warning", "notice-info", "status-pill", "tag-current"):
+    def test_every_pastel_notice_and_level_class_has_a_rule(self):
+        for name in (*theme.SUMMARY_PASTELS, "pastel-sage", "moment-morning", "moment-evening", "status-pill",
+                     "tag-current", *(f"notice-{kind}" for kind in theme.NOTICE_KINDS)):
             self.assertIn(f".{name}", CSS_CODE)
+        for kind in theme.NOTICE_KINDS:
+            self.assertIn(f".notice-{kind} .notice-icon", CSS_CODE)
         for level in theme.LEVEL_KEYS:
-            self.assertIn(f".value-pill.level-{level}", CSS_CODE)
-            self.assertIn(f".morning-chip.level-{level}", CSS_CODE)
+            for owner in ("level-chip", "level-value", "range-segment", "legend-dot"):
+                self.assertIn(f".{owner}.level-{level}", CSS_CODE)
+
+    def test_type_scale_is_the_tablet_one_in_points(self):
+        """Tailles de DESIGN.md (px) en points (x 0,75) : le texte suit le réglage « grands caractères »."""
+        sizes = {"dose-number": 96, "display-medium": 45, "display-small": 36, "headline-large": 32,
+                 "headline-small": 24, "title-large": 22, "title-medium": 16, "title-small": 14, "body-large": 16,
+                 "body-medium": 14, "body-small": 12, "label-large": 14, "label-medium": 12}
+        for name, px in sizes.items():
+            sizes_set = {m.group(1) for m in re.finditer(rf"\.{name}\b[^{{]*\{{[^}}]*font-size: ([\d.]+pt)", CSS_CODE)}
+            self.assertEqual(sizes_set, {f"{px * 0.75:g}pt"}, name)
+
+    def test_touch_targets_are_at_least_48_px(self):
+        """min-height + padding vertical des pilules, filtres et onglets : 48 px au moins, 56 pour les grandes."""
+        for selector, need in (("button.pill-button", 48), ("button.pill-button.tall", 56), ("button.filter-chip", 48),
+                               (".navbar button.nav-item", 48), (".navbar.compact button.nav-item", 56)):
+            rule = re.search(rf"^{re.escape(selector)} \{{([^}}]*)\}}", CSS_CODE, re.M).group(1)
+            height = int(re.search(r"min-height: (\d+)px", rule).group(1))
+            vertical = int(re.search(r"padding: (\d+)px", rule).group(1))
+            self.assertGreaterEqual(height + 2 * vertical, need, selector)
 
     def test_no_shadow_on_cards(self):
-        rule = re.search(r"\.card, list\.boxed-list[^{]*\{([^}]*)\}", CSS_CODE).group(1)
+        rule = re.search(r"\.section-card, \.card, list\.boxed-list[^{]*\{([^}]*)\}", CSS_CODE).group(1)
         self.assertIn("box-shadow: none", rule)
 
 
@@ -232,7 +310,7 @@ class InstalledThemeTest(unittest.TestCase):
 
 @unittest.skipUnless(HAS_DISPLAY, "pas d'affichage graphique")
 class ThemeClassesTest(unittest.TestCase):
-    """Les classes que la feuille de style attend sont posées par les écrans."""
+    """Les classes que la feuille de style attend sont posées par les écrans, et chaque classe posée a sa règle."""
 
     @classmethod
     def setUpClass(cls):
@@ -241,70 +319,88 @@ class ThemeClassesTest(unittest.TestCase):
         from app.window import MainWindow
         from scripts.screenshots import demo_export_file, demo_state
 
-        # sans identifiant : enregistrée sans D-Bus, « startup » émis avant d'y ajouter la fenêtre
-        cls.app = Adw.Application()
-        cls.app.register(None)
+        from app.tests.gtk_app import application
+
+        cls.app = application()
         cls.window = MainWindow(application=cls.app, state=demo_state(demo_export_file(30), "titration"))
-        cls.window._build_charts()
+        cls.window.charts.build()
 
     @classmethod
     def tearDownClass(cls):
         cls.window.destroy()
 
-    def classed(self, css: str) -> list:
-        return [w for w in descendants(self.window) if w.has_css_class(css)]
+    def classed(self, css: str, root=None) -> list:
+        return [w for w in descendants(root or self.window) if w.has_css_class(css)]
+
+    def test_every_class_set_by_the_app_has_a_rule(self):
+        """Une classe écrite dans app/*.py et posée sur un widget est stylée par style.css ou vient de libadwaita."""
+        source = "".join(path.read_text(encoding="utf-8") for path in theme.APP_DIR.glob("*.py"))
+        literals = set(re.findall(r'"([a-z][a-z0-9-]+)"', source))
+        self.window.today.open_detail()
+        try:
+            widgets = [self.window, *descendants(self.window)]
+            dialog = self.window.get_visible_dialog()
+            widgets += [dialog, *descendants(dialog)]
+            used = {css for w in widgets for css in w.get_css_classes()} & literals
+        finally:
+            self.window.today.detail.force_close()
+        defined = set(re.findall(r"\.([a-z][a-z0-9-]+)", CSS_CODE))
+        self.assertEqual(used - defined - ADWAITA_CLASSES - set(theme.palette(False)), set())
 
     def test_dose_tiles_have_their_moment_and_proposal_pill(self):
-        self.assertEqual(len(self.classed("moment-morning")), 1)
-        self.assertEqual(len(self.classed("moment-evening")), 1)
-        pills = self.classed("status-pill")
-        self.assertEqual(len(pills), 2, "titration : une proposition pour chaque dose")
-        self.assertTrue(all(p.get_label().startswith("proposé") for p in pills))
+        today = self.window.today.widget
+        self.assertEqual(len(self.classed("moment-morning", today)), 1)
+        self.assertEqual(len(self.classed("moment-evening", today)), 1)
+        pills = self.classed("status-pill", today)
+        self.assertEqual(len(pills), 2)
+        self.assertTrue(all(p.has_css_class("proposed") for p in pills), "titration : une proposition pour chaque dose")
 
-    def test_alerts_carry_a_notice_class(self):
-        notices = [w for w in descendants(self.window) if isinstance(w, Gtk.ListBox)
-                   and any(w.has_css_class(c) for c in ("notice-danger", "notice-warning", "notice-info"))]
-        self.assertTrue(notices)
-        self.assertFalse([w for w in descendants(self.window) if isinstance(w, Adw.ActionRow)
+    def test_alerts_are_notices(self):
+        from app.components import Notice
+
+        self.assertTrue([w for w in descendants(self.window) if isinstance(w, Notice)])
+        self.assertFalse([w for w in descendants(self.window) if isinstance(w, (Adw.ActionRow, Adw.StatusPage))
                           and (w.has_css_class("error") or w.has_css_class("warning"))])
 
-    def test_summary_tiles_are_pastel_and_outside_the_card(self):
-        tiles = self.classed("summary-tile")
-        self.assertEqual([next(c for c in t.get_css_classes() if c.startswith("pastel-")) for t in tiles],
+    def test_summary_tiles_are_pastel_and_outside_the_cards(self):
+        measures = self.classed("stat-tile", self.window.measures.summary_box)
+        self.assertEqual([next(c for c in t.get_css_classes() if c.startswith("pastel-")) for t in measures],
                          list(theme.SUMMARY_PASTELS))
-        for tile in tiles:
+        charts = self.classed("stat-tile", self.window.charts.widget)
+        self.assertEqual([next(c for c in t.get_css_classes() if c.startswith("pastel-")) for t in charts],
+                         ["pastel-sage", *theme.SUMMARY_PASTELS])
+        for tile in measures + charts:
             parent = tile.get_parent()
             while parent is not None:
-                self.assertFalse(parent.has_css_class("card"))
+                self.assertFalse(parent.has_css_class("section-card"))
                 parent = parent.get_parent()
 
-    def test_chart_stat_tiles_use_the_five_pastels(self):
-        tones = [next(c for c in t.get_css_classes() if c.startswith("pastel-")) for t in self.classed("stat-tile")]
-        self.assertEqual(tones, ["pastel-sage", *theme.SUMMARY_PASTELS])
-
-    def test_morning_chips_show_their_level(self):
-        chips = self.classed("morning-chip")
+    def test_level_chips_show_their_level(self):
+        chips = self.classed("level-chip")
         self.assertTrue(chips)
+        levels = {f"level-{k}" for k in theme.LEVEL_KEYS} | {"dimmed"}
         for chip in chips:
-            self.assertEqual(len([c for c in chip.get_css_classes() if c in {f"level-{k}" for k in theme.LEVEL_KEYS}]), 1)
+            self.assertEqual(len([c for c in chip.get_css_classes() if c in levels]), 1)
 
     def test_current_dose_and_protocol_are_tagged(self):
         tags = self.classed("tag-current")
         self.assertEqual(len(tags), 2)
         self.assertTrue(all(t.get_label() == "En cours" for t in tags))
 
-    def test_filters_are_round(self):
-        groups = [w for w in descendants(self.window) if isinstance(w, Adw.ToggleGroup)]
-        self.assertTrue(groups)
-        self.assertTrue(all(g.has_css_class("round") for g in groups))
+    def test_filters_are_chips(self):
+        from app.components import FilterChips
+
+        rows = [w for w in descendants(self.window) if isinstance(w, FilterChips)]
+        self.assertEqual(len(rows), 4, "trois rangées dans Mesures, une dans Graphiques")
+        self.assertFalse([w for w in descendants(self.window) if isinstance(w, Adw.ToggleGroup)])
 
     def test_charts_are_rebuilt_on_dark_switch(self):
         manager = Adw.StyleManager.get_default()
         scheme = manager.get_color_scheme()
         try:
-            self.window.charts_dirty = False
+            self.window.charts.dirty = False
             manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK if not manager.get_dark() else Adw.ColorScheme.FORCE_LIGHT)
-            self.assertTrue(self.window.charts_dirty)
+            self.assertTrue(self.window.charts.dirty)
         finally:
             manager.set_color_scheme(scheme)
             while GLib.MainContext.default().iteration(False):

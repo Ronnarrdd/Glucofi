@@ -195,7 +195,8 @@ def _bounds(widget, window):
 
 
 def _visible(label, root, window) -> bool:
-    """Entièrement à l'écran : dans la fenêtre et dans la zone visible de chaque fenêtre défilante parente."""
+    """Entièrement à l'écran : dans la fenêtre et dans la zone visible (verticale et horizontale) de chaque fenêtre
+    défilante parente."""
     from gi.repository import Gtk
 
     box = _bounds(label, window)
@@ -209,12 +210,23 @@ def _visible(label, root, window) -> bool:
             clip = _bounds(parent, window)
             if clip is None or y < clip[1] - 0.5 or y + h > clip[1] + clip[3] + 0.5:
                 return False
+            # rangée de filtres qui défile à l'horizontale : les pilules hors de la zone visible ne sont pas peintes
+            if x < clip[0] - 0.5 or x + w > clip[0] + clip[2] + 0.5:
+                return False
     return True
 
 
 def _overflow(label, window) -> str:
+    from gi.repository import Gtk
+
     width = window.get_width()
-    for widget in (label, *_ancestors(label, window)):
+    chain = [label, *_ancestors(label, window)]
+    # contenu d'une rangée qui défile à l'horizontale (filtres) : seule la fenêtre défilante doit tenir
+    for index, widget in enumerate(chain):
+        if isinstance(widget, Gtk.ScrolledWindow) and widget.get_policy()[0] != Gtk.PolicyType.NEVER:
+            chain = chain[index:]
+            break
+    for widget in chain:
         box = _bounds(widget, window)
         if box is not None and box[2] > 0 and (
             box[0] < -OVERFLOW_TOLERANCE or box[0] + box[2] > width + OVERFLOW_TOLERANCE
@@ -334,13 +346,17 @@ def run_app(views: list[tuple[str, bool, int, str]]) -> tuple[list[Check], dict[
             if pixels is None:
                 checks.append(Check(name, "fenêtre", "rendu", "vide après 6 s", "image", False))
             else:
-                root = dialog if view == "preferences" and dialog is not None else window
-                samples = sample_labels(name, window, root, pixels)
-                labels[name] = len(samples)
-                for sample in samples:
-                    checks.extend(assess_label(sample))
-                if view != "preferences":
-                    checks.append(assess_background(name, pixels.at(4, window.get_height() // 2), dark))
+                # une exception dans ce rappel GLib laisserait l'application tenue : l'eval attendrait sans fin
+                try:
+                    root = dialog if view == "preferences" and dialog is not None else window
+                    samples = sample_labels(name, window, root, pixels)
+                    labels[name] = len(samples)
+                    for sample in samples:
+                        checks.extend(assess_label(sample))
+                    if view != "preferences":
+                        checks.append(assess_background(name, pixels.at(4, window.get_height() // 2), dark))
+                except Exception as exc:  # noqa: BLE001
+                    checks.append(Check(name, "eval", "exception", repr(exc), "aucune", False))
             if dialog is not None:
                 dialog.force_close()
             if queue:

@@ -1,8 +1,13 @@
-"""Fenêtre principale : Aujourd'hui, Graphiques, Mesures, Doses."""
+"""Fenêtre principale : barre du haut, onglets, actions et tâches de fond (lecteur, tablette, PDF).
+
+Chaque onglet est sa page : Aujourd'hui (today_page.py), Mesures (measures_page.py), Graphiques (charts_page.py),
+Doses (doses_page.py). La barre du haut est plate sur le sauge : logo et « Glucofi » à gauche, onglets en pilules
+au centre (en bas sous 600 px), tablette, PDF et menu à droite. « Récupérer les mesures » est dans la bannière
+d'Aujourd'hui, dans le menu et sur Ctrl+R.
+"""
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import shutil
 import tempfile
@@ -10,119 +15,68 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from app import theme
-from app.dialogs import manual_dose_dialog, note_dialog, onboarding_dialog, preferences_dialog
+from app.art import GlucofiMark
+from app.charts_page import CHART_PERIODS, HAS_MPL, ChartsPage
+from app.components import NavBar, label
+from app.dialogs import manual_dose_dialog, onboarding_dialog, preferences_dialog
+from app.doses_page import DosesPage
 from app.measures_page import MeasuresPage
-from app.protocol import DOSE_NAMES, evening_rule_text, morning_rule_text, protocol_history, protocol_sections
-from app.state import AppState, StaleProposal, clock_text, import_message, merge_message, meter_text
-from app.widgets import clear as _clear
-from app.widgets import page as _page
-from app.widgets import toggle_group as _toggle_group
-from contracts import (
-    count_fr,
-    DOSE_TARGET_LABELS_FR,
-    MEAL_LABELS_FR,
-    REFERENCE_LABELS_FR,
-    RULE_LABELS_FR,
-    AlertLevel,
-    DoseAdjustment,
-    DoseProposal,
-    DoseTarget,
-    Reading,
-)
-from services import device
+from app.protocol import protocol_history, protocol_sections
+from app.state import AppState, import_message, merge_message
+from app.today_page import TodayPage
 from contracts.tablet_sync import PC_FILE
+from services import device
+from services.store import MergeRefused
 from services.tablet import TabletError, TabletLink
 from services.tablet import result as sync_result
-from services.store import MergeRefused
-from services.dosing import fmt_g_l, fmt_mg_dl
 
 log = logging.getLogger("glucofi.ui")
 
-HAS_MPL = importlib.util.find_spec("matplotlib") is not None
-CHART_DPI = 200
-CHART_WIDTH_PX = 860
-CHART_PERIODS = (("14", "14 jours"), ("30", "30 jours"), ("90", "90 jours"))
-DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
-ALERT_STYLES = {
-    AlertLevel.DANGER: ("dialog-error-symbolic", "notice-danger"),
-    AlertLevel.WARNING: ("dialog-warning-symbolic", "notice-warning"),
-    AlertLevel.INFO: ("dialog-information-symbolic", "notice-info"),
-}
-MOMENT_CSS = {DoseTarget.MORNING: "moment-morning", DoseTarget.EVENING: "moment-evening"}
-
-
-def _glycemia_class(reading: Reading, state: AppState, target: DoseTarget = DoseTarget.EVENING) -> str:
-    t = state.settings.titration(target)
-    if reading.g_l < t.low_g_l:
-        return "error"
-    if reading.g_l > t.high_g_l:
-        return "warning"
-    return "success"
-
-
-def _value_label(reading: Reading, state: AppState, target: DoseTarget = DoseTarget.EVENING) -> Gtk.Label:
-    label = Gtk.Label(label=fmt_g_l(reading.mg_dl), valign=Gtk.Align.CENTER)
-    label.add_css_class("heading")
-    label.add_css_class(_glycemia_class(reading, state, target))
-    return label
-
-
-def _meal_suffix(reading: Reading) -> str:
-    return f" · {MEAL_LABELS_FR[reading.meal]}" if reading.meal is not None else ""
-
-
-def _current_tag() -> Gtk.Label:
-    tag = Gtk.Label(label="En cours", valign=Gtk.Align.CENTER)
-    tag.add_css_class("tag-current")
-    return tag
+PAGES = (
+    ("today", "Aujourd'hui", "glucofi-home-symbolic", "glucofi-home-fill-symbolic"),
+    ("measures", "Mesures", "glucofi-measures-symbolic", "glucofi-measures-symbolic"),
+    ("charts", "Graphiques", "glucofi-charts-symbolic", "glucofi-charts-symbolic"),
+    ("doses", "Doses", "glucofi-doses-symbolic", "glucofi-doses-fill-symbolic"),
+)
+NARROW = "max-width: 600sp"
+# à 360 px, avec réduire, agrandir et fermer dans la barre, le nom à côté du logo ne tient plus
+TINY = "max-width: 400sp"
+ACCELS = {"win.fetch": ["<Control>r"], "win.export": ["<Control>p"], "win.preferences": ["<Control>comma"]}
 
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application, state: AppState):
-        super().__init__(application=application, title="Glucofi", default_width=1000, default_height=780)
+        super().__init__(application=application, title="Glucofi", default_width=1100, default_height=800)
         self.state = state
-        self.chart_days = "30"
-        self.charts_dirty = True
         self.busy = False
-        self._proposal: DoseProposal | None = None
 
         self._install_actions()
         self.toasts = Adw.ToastOverlay()
         self.stack = Adw.ViewStack()
+        self.today = TodayPage(self, state, self.refresh, self.toast)
+        self.measures = MeasuresPage(state, self.refresh)
+        self.charts = ChartsPage(state)
+        self.doses = DosesPage(state)
+        for (name, title, icon, _active), page in zip(PAGES, (self.today, self.measures, self.charts, self.doses)):
+            self.stack.add_titled_with_icon(page.widget, name, title, icon)
         self.stack.connect("notify::visible-child-name", self._on_page_changed)
 
-        self.today_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        self.stack.add_titled_with_icon(_page(self.today_box), "today", "Aujourd'hui", "x-office-calendar-symbolic")
-        self.stack.add_titled_with_icon(self._build_charts_page(), "charts", "Graphiques", "x-office-spreadsheet-symbolic")
-        self.measures = MeasuresPage(state, self.fetch_from_device, self.refresh)
-        self.stack.add_titled_with_icon(self.measures.widget, "measures", "Mesures", "view-list-symbolic")
-        self.doses_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        self.stack.add_titled_with_icon(_page(self.doses_box), "doses", "Doses", "document-edit-symbolic")
-
         header = Adw.HeaderBar()
-        switcher = Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE)
-        header.set_title_widget(switcher)
-        fetch_content = Adw.ButtonContent(icon_name="view-refresh-symbolic", label="Récupérer")
-        self.fetch_button = Gtk.Button(
-            child=fetch_content,
-            tooltip_text="Lire les mesures du lecteur Accu-Chek branché en USB",
-        )
-        self.fetch_button.add_css_class("suggested-action")
-        self.fetch_button.connect("clicked", lambda _b: self.fetch_from_device())
-        self.spinner = Adw.Spinner(visible=False)
-        self.sync_button = Gtk.Button(
-            icon_name="phone-symbolic",
-            tooltip_text="Synchroniser avec la tablette branchée en USB (dans les deux sens)",
-            action_name="win.sync-tablet",
-        )
-        header.pack_start(self.fetch_button)
-        header.pack_start(self.sync_button)
-        header.pack_start(self.spinner)
+        header.add_css_class("glucofi-header")
+        brand = Gtk.Box(spacing=10, valign=Gtk.Align.CENTER, margin_start=4)
+        brand.append(GlucofiMark(size=40))
+        self.brand_name = label("Glucofi", "title-large")
+        brand.append(self.brand_name)
+        brand.update_property([Gtk.AccessibleProperty.LABEL], ["Glucofi"])
+        header.pack_start(brand)
+        self.nav = NavBar(self.stack, PAGES)
+        header.set_title_widget(self.nav)
 
         menu = Gio.Menu()
+        menu.append("Récupérer les mesures", "win.fetch")
         menu.append("Importer un fichier JSON…", "win.import")
         menu.append("Exporter en PDF…", "win.export")
         menu.append("Modifier la dose…", "win.manual-dose")
@@ -135,30 +89,51 @@ class MainWindow(Adw.ApplicationWindow):
         section.append("Préférences", "win.preferences")
         section.append("À propos de Glucofi", "win.about")
         menu.append_section(None, section)
-        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu principal"))
-        pdf_button = Gtk.Button(icon_name="x-office-document-symbolic", tooltip_text="Exporter en PDF", action_name="win.export")
+        menu_button = Gtk.MenuButton(icon_name="glucofi-menu-symbolic", menu_model=menu, tooltip_text="Menu principal")
+        menu_button.update_property([Gtk.AccessibleProperty.LABEL], ["Menu principal"])
+        header.pack_end(menu_button)
+        pdf_button = Gtk.Button(icon_name="glucofi-pdf-symbolic", tooltip_text="Exporter en PDF (Ctrl+P)", action_name="win.export")
+        pdf_button.update_property([Gtk.AccessibleProperty.LABEL], ["Exporter en PDF"])
         header.pack_end(pdf_button)
+        self.sync_button = Gtk.Button(
+            icon_name="glucofi-tablet-symbolic",
+            tooltip_text="Synchroniser avec la tablette branchée en USB (dans les deux sens)",
+            action_name="win.sync-tablet",
+        )
+        self.sync_button.update_property([Gtk.AccessibleProperty.LABEL], ["Synchroniser avec la tablette"])
+        header.pack_end(self.sync_button)
+        self.spinner = Adw.Spinner(visible=False)
+        header.pack_end(self.spinner)
+        for button in (menu_button, pdf_button, self.sync_button):
+            button.add_css_class("header-action")
 
-        switcher_bar = Adw.ViewSwitcherBar(stack=self.stack)
-        toolbar = Adw.ToolbarView()
-        toolbar.add_top_bar(header)
-        toolbar.add_bottom_bar(switcher_bar)
+        self.bottom_nav = NavBar(self.stack, PAGES, compact=True)
+        bottom = Gtk.Box()
+        bottom.add_css_class("bottom-nav")
+        bottom.append(self.bottom_nav)
+        self.bottom_nav.set_hexpand(True)
+        self.toolbar = Adw.ToolbarView(reveal_bottom_bars=False)
+        self.toolbar.add_top_bar(header)
+        self.toolbar.add_bottom_bar(bottom)
         self.toasts.set_child(self.stack)
-        toolbar.set_content(self.toasts)
-        self.set_content(toolbar)
+        self.toolbar.set_content(self.toasts)
+        self.set_content(self.toolbar)
 
         def narrow(condition: str) -> Adw.Breakpoint:
             breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(condition))
-            breakpoint.add_setter(switcher_bar, "reveal", True)
-            breakpoint.add_setter(switcher, "visible", False)
-            self.measures.add_narrow_setters(breakpoint)
+            breakpoint.add_setter(self.toolbar, "reveal-bottom-bars", True)
+            breakpoint.add_setter(self.nav, "visible", False)
+            for page in (self.today, self.measures, self.charts, self.doses):
+                page.narrow_setters(breakpoint)
             self.add_breakpoint(breakpoint)
             return breakpoint
 
-        narrow("max-width: 600sp")
-        # le dernier point de rupture vérifié l'emporte : à 360 px, avec réduire, agrandir et fermer dans la
-        # barre, « Récupérer » passe en icône seule (son infobulle garde le texte)
-        narrow("max-width: 400sp").add_setter(fetch_content, "label", "")
+        narrow(NARROW)
+        # le dernier point de rupture vérifié l'emporte : celui-ci reprend tout le précédent ; la tablette et le PDF
+        # restent dans le menu
+        tiny = narrow(TINY)
+        for widget in (self.brand_name, self.sync_button, pdf_button):
+            tiny.add_setter(widget, "visible", False)
         style_manager = Adw.StyleManager.get_default()
         dark_handler = style_manager.connect("notify::dark", self._on_dark_changed)
         self.connect("destroy", lambda _w: style_manager.disconnect(dark_handler))
@@ -171,6 +146,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _install_actions(self):
         for name, callback in (
+            ("fetch", self.fetch_from_device),
+            ("onboard", self._onboard),
             ("import", self.import_file),
             ("export", self.export_pdf),
             ("manual-dose", lambda: manual_dose_dialog(self, self.state, self.refresh)),
@@ -183,6 +160,10 @@ class MainWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", lambda _a, _p, cb=callback: cb())
             self.add_action(action)
+        application = self.get_application()
+        if application is not None:
+            for action, accels in ACCELS.items():
+                application.set_accels_for_action(action, accels)
 
     def _onboard(self):
         onboarding_dialog(self, self.state, self.refresh)
@@ -203,8 +184,13 @@ class MainWindow(Adw.ApplicationWindow):
     def set_busy(self, busy: bool) -> None:
         self.busy = busy
         self.spinner.set_visible(busy)
-        self.fetch_button.set_sensitive(not busy)
-        self.sync_button.set_sensitive(not busy)
+        for name in ("fetch", "sync-tablet", "import", "merge-db", "manual-dose"):
+            self.lookup_action(name).set_enabled(not busy)
+        self.today.set_busy(busy)
+
+    @property
+    def on_today(self) -> bool:
+        return self.stack.get_visible_child_name() == "today" and self.get_mapped()
 
     # Lecteur
 
@@ -212,7 +198,9 @@ class MainWindow(Adw.ApplicationWindow):
         if self.busy:
             return
         self.set_busy(True)
-        self.toast("Lecture du lecteur en cours… Ne débranchez pas l'appareil.", timeout=3)
+        self.today.set_read("reading")
+        if not self.on_today:
+            self.toast("Lecture du lecteur en cours… Ne débranchez pas l'appareil.", timeout=3)
         threading.Thread(target=self._fetch_worker, daemon=True).start()
 
     def _fetch_worker(self) -> None:
@@ -229,12 +217,17 @@ class MainWindow(Adw.ApplicationWindow):
     def _fetch_done(self, result, error: str | None) -> bool:
         self.set_busy(False)
         if error:
-            self.error("Lecture impossible", error)
+            self.today.set_read("failed", f"Lecture impossible : {error}")
+            if not self.on_today:
+                self.error("Lecture impossible", error)
             return False
         summary = self.state.import_fetch(result)
-        self.toast(import_message(summary))
-        if result.warnings:
-            self.error("Lecture terminée, à vérifier", "\n\n".join(result.warnings))
+        message = import_message(summary)
+        self.today.set_read("done", message, tuple(result.warnings))
+        if not self.on_today:
+            self.toast(message)
+            if result.warnings:
+                self.error("Lecture terminée, à vérifier", "\n\n".join(result.warnings))
         self.refresh()
         return False
 
@@ -392,10 +385,10 @@ class MainWindow(Adw.ApplicationWindow):
             return
         chooser = Adw.AlertDialog(heading="Exporter en PDF", body="Période couverte par le rapport :")
         chooser.add_response("cancel", "Annuler")
-        for days, label in CHART_PERIODS:
-            chooser.add_response(days, label)
-        chooser.set_response_appearance(self.chart_days, Adw.ResponseAppearance.SUGGESTED)
-        chooser.set_default_response(self.chart_days)
+        for days, text in CHART_PERIODS:
+            chooser.add_response(days, text)
+        chooser.set_response_appearance(self.charts.days, Adw.ResponseAppearance.SUGGESTED)
+        chooser.set_default_response(self.charts.days)
         chooser.set_close_response("cancel")
         chooser.connect("response", lambda _d, resp: resp != "cancel" and self._choose_pdf_path(int(resp)))
         chooser.present(self)
@@ -458,7 +451,6 @@ class MainWindow(Adw.ApplicationWindow):
         def saved(error: str | None):
             if error:
                 self.toast(error)
-            self.charts_dirty = True
             self.refresh()
 
         preferences_dialog(self, self.state, saved)
@@ -480,333 +472,26 @@ class MainWindow(Adw.ApplicationWindow):
             licence = theme.FONT_DIR / "licences" / f"{family}-OFL.txt"
             if licence.is_file():
                 about.add_legal_section(f"Police {family}", None, Gtk.License.CUSTOM, licence.read_text(encoding="utf-8"))
+        about.add_legal_section(
+            "Icônes Material Symbols", "© Google", Gtk.License.APACHE_2_0, None,
+        )
         about.present(self)
 
     # Rafraîchissement
 
     def refresh(self) -> None:
-        self._proposal = self.state.proposal()
-        self._build_today()
-        self._build_doses()
+        self.today.refresh()
+        self.doses.refresh()
         self.measures.refresh()
-        self.charts_dirty = True
+        self.charts.dirty = True
         if self.stack.get_visible_child_name() == "charts":
-            self._build_charts()
+            self.charts.build()
 
     def _on_page_changed(self, *_args) -> None:
-        if self.stack.get_visible_child_name() == "charts" and self.charts_dirty:
-            self._build_charts()
+        if self.stack.get_visible_child_name() == "charts" and self.charts.dirty:
+            self.charts.build()
 
     def _on_dark_changed(self, *_args) -> None:
         """Les graphiques sont des images : refaites aux couleurs du thème clair ou sombre."""
-        self.charts_dirty = True
+        self.charts.dirty = True
         self._on_page_changed()
-
-    # Aujourd'hui
-
-    def _build_today(self) -> None:
-        box = self.today_box
-        _clear(box)
-        proposal = self._proposal
-        if proposal is None:
-            box.append(Adw.StatusPage(
-                icon_name="x-office-calendar-symbolic",
-                title="Bienvenue",
-                description="Recopiez le protocole de votre ordonnance pour commencer le suivi.",
-            ))
-            return
-
-        for alert in proposal.alerts:
-            banner = Adw.ActionRow(title=alert.message, title_lines=0)
-            banner.set_use_markup(False)
-            icon, css = ALERT_STYLES[alert.level]
-            banner.add_prefix(Gtk.Image(icon_name=icon))
-            frame = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-            frame.add_css_class("boxed-list")
-            frame.add_css_class(css)
-            frame.append(banner)
-            box.append(frame)
-
-        current = proposal.current
-        insulin = self.state.settings.insulin
-        doses = Gtk.Box(spacing=12, homogeneous=True)
-        for target, ui in ((DoseTarget.MORNING, current.morning_ui), (DoseTarget.EVENING, current.evening_ui)):
-            adjustment = proposal.adjustment(target)
-            if adjustment is not None and adjustment.changes_dose:
-                doses.append(self._dose_card(
-                    target, f"{adjustment.proposed_ui} UI", f"proposé (actuellement {ui} UI)", proposed=True,
-                ))
-            else:
-                doses.append(self._dose_card(target, f"{ui} UI", insulin))
-        box.append(doses)
-
-        for adjustment in proposal.adjustments:
-            box.append(self._adjustment_group(proposal, adjustment))
-        for adjustment in proposal.adjustments:
-            box.append(self._references_group(adjustment))
-
-        info = Adw.PreferencesGroup(title="Lecteur")
-        last = self.state.last_import()
-        info.add(Adw.ActionRow(
-            title="Dernière récupération",
-            subtitle=(f"{last.at:%d/%m/%Y à %H:%M} · {count_fr(last.added, 'nouvelle', 'nouvelles')} sur {last.received}" if last else "Jamais : branchez le lecteur puis cliquez sur Récupérer"),
-        ))
-        info.add(Adw.ActionRow(
-            title="Mesures enregistrées",
-            subtitle=(
-                f"{self.state.store.count_readings()} dont {self.state.store.count_markers()} avec un marqueur repas"
-                f" et {self.state.store.count_notes()} avec une note"
-            ),
-        ))
-        meters = self.state.meters()
-        if meters:
-            meter_row = Adw.ActionRow(title="Lecteur", subtitle=meter_text(meters[0][0]))
-            meter_row.set_use_markup(False)
-            info.add(meter_row)
-        if last is not None and last.source == "lecteur":
-            info.add(Adw.ActionRow(title="Horloge du lecteur", subtitle=clock_text(last)))
-        box.append(info)
-
-        disclaimer = Gtk.Label(
-            label="Les propositions appliquent le protocole prescrit et ne remplacent pas l'avis du médecin.",
-            wrap=True, justify=Gtk.Justification.CENTER,
-        )
-        disclaimer.add_css_class("dim-label")
-        disclaimer.add_css_class("caption")
-        box.append(disclaimer)
-
-    def _adjustment_group(self, proposal: DoseProposal, adjustment: DoseAdjustment) -> Gtk.Widget:
-        group = Adw.PreferencesGroup(title=f"Ajustement de la {DOSE_NAMES[adjustment.target]}")
-        row = Adw.ActionRow(title=RULE_LABELS_FR[adjustment.rule], subtitle=adjustment.reason, subtitle_lines=0)
-        row.set_use_markup(False)
-        if adjustment.changes_dose:
-            validate = Gtk.Button(label=f"Valider {adjustment.proposed_ui} UI", valign=Gtk.Align.CENTER)
-            validate.add_css_class("suggested-action")
-            validate.connect("clicked", lambda _b: self._confirm_validation(proposal, adjustment))
-            row.add_suffix(validate)
-            row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
-        else:
-            row.add_prefix(Gtk.Image(icon_name="object-select-symbolic"))
-        group.add(row)
-        return group
-
-    def _references_group(self, adjustment: DoseAdjustment) -> Gtk.Widget:
-        target, ref = adjustment.target, REFERENCE_LABELS_FR[adjustment.target]
-        rule = morning_rule_text if target is DoseTarget.EVENING else evening_rule_text
-        group = Adw.PreferencesGroup(
-            title=f"Glycémies du {ref} depuis le dernier changement de la {DOSE_NAMES[target]}",
-            description=rule(self.state.settings),
-        )
-        shown = sorted([(m.reading, False) for m in adjustment.references] + [(r, True) for r in adjustment.excluded])
-        if not shown:
-            group.add(Adw.ActionRow(title=f"Aucune glycémie du {ref} pour l'instant"))
-        for reading, excluded in reversed(shown[-10:]):
-            subtitle = f"{reading.device_time:%H:%M} · {fmt_mg_dl(reading.mg_dl)}{_meal_suffix(reading)}"
-            if excluded:
-                subtitle += f"\nÉcartée de l'ajustement : {reading.note.summary}"
-            elif reading.note is not None and reading.note.summary:
-                subtitle += f"\nNote : {reading.note.summary}"
-            row = Adw.ActionRow(title=f"{DAYS_FR[reading.day.weekday()]} {reading.day:%d/%m/%Y}", subtitle=subtitle)
-            row.set_use_markup(False)
-            value = _value_label(reading, self.state, target)
-            if excluded:
-                row.add_css_class("dim-label")
-                value.set_tooltip_text("Écartée de l'ajustement de la dose par une note")
-            row.add_suffix(value)
-            row.set_activatable(True)
-            row.set_tooltip_text("Ajouter ou modifier une note")
-            row.connect("activated", lambda _r, rd=reading: note_dialog(self, self.state, rd, self.refresh))
-            group.add(row)
-        return group
-
-    def _dose_card(self, target: DoseTarget, value: str, subtitle: str, proposed: bool = False) -> Gtk.Widget:
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        card.add_css_class("card")
-        card.add_css_class("dose-card")
-        card.add_css_class(MOMENT_CSS[target])
-        heading = Gtk.Label(label=DOSE_TARGET_LABELS_FR[target])
-        heading.add_css_class("title-4")
-        number = Gtk.Label(label=value)
-        number.add_css_class("dose-value")
-        sub = Gtk.Label(label=subtitle, wrap=True, justify=Gtk.Justification.CENTER, halign=Gtk.Align.CENTER)
-        sub.add_css_class("status-pill" if proposed else "dim-label")
-        for widget in (heading, number, sub):
-            card.append(widget)
-        return card
-
-    def _confirm_validation(self, proposal: DoseProposal, adjustment: DoseAdjustment) -> None:
-        dose = DOSE_NAMES[adjustment.target]
-        when = "ce soir" if adjustment.target is DoseTarget.EVENING else "demain matin"
-        dialog = Adw.AlertDialog(
-            heading=f"Passer la {dose} de {adjustment.current_ui} à {adjustment.proposed_ui} UI ?",
-            body=f"{adjustment.reason}\n\nLa nouvelle dose s'applique à partir de {when}.",
-        )
-        dialog.add_response("cancel", "Annuler")
-        dialog.add_response("validate", "Valider")
-        dialog.set_response_appearance("validate", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_close_response("cancel")
-
-        def on_response(_d, response):
-            if response != "validate":
-                return
-            try:
-                self.state.validate(proposal, target=adjustment.target)
-            except StaleProposal as exc:
-                self.toast(str(exc))
-            else:
-                self.toast(f"{dose.capitalize()} : {adjustment.proposed_ui} UI à partir de {when}")
-            self.refresh()
-
-        dialog.connect("response", on_response)
-        dialog.present(self)
-
-    # Doses
-
-    def _build_doses(self) -> None:
-        box = self.doses_box
-        _clear(box)
-        group = Adw.PreferencesGroup(title="Historique des doses", description="La dose la plus récente est celle en cours.")
-        edit = Gtk.Button(label="Modifier…", valign=Gtk.Align.CENTER, action_name="win.manual-dose")
-        edit.add_css_class("flat")
-        group.set_header_suffix(edit)
-        changes = self.state.dose_changes()
-        if not changes:
-            group.add(Adw.ActionRow(title="Aucune dose enregistrée"))
-        for i, change in enumerate(reversed(changes)):
-            details = "\n".join(change.evidence) or change.note
-            if change.excluded:
-                details += "\nÉcartées : " + "\n".join(change.excluded)
-            row = Adw.ActionRow(
-                title=f"Matin {change.morning_ui} UI · Soir {change.evening_ui} UI",
-                subtitle=f"Depuis le {change.effective:%d/%m/%Y %H:%M} · {RULE_LABELS_FR[change.rule]}" + (f"\n{details}" if details else ""),
-                subtitle_lines=0,
-            )
-            row.set_use_markup(False)
-            if i == 0:
-                row.add_suffix(_current_tag())
-            group.add(row)
-        box.append(group)
-        self._build_protocol(box)
-
-    def _build_protocol(self, box: Gtk.Box) -> None:
-        settings = self.state.settings
-        if settings is None:
-            return
-        group = Adw.PreferencesGroup(title="Protocole en cours", description="Recopié de l'ordonnance ; à modifier dans les Préférences.")
-        edit = Gtk.Button(label="Modifier…", valign=Gtk.Align.CENTER, action_name="win.preferences")
-        edit.add_css_class("flat")
-        group.set_header_suffix(edit)
-        for title, lines in protocol_sections(settings):
-            row = Adw.ActionRow(title=title, subtitle="\n".join(lines), subtitle_lines=0)
-            row.set_use_markup(False)
-            group.add(row)
-        box.append(group)
-
-        history = Adw.PreferencesGroup(title="Historique du protocole", description="La version la plus récente est celle en cours.")
-        entries = protocol_history(self.state.protocol_changes())
-        if not entries:
-            history.add(Adw.ActionRow(title="Aucune version enregistrée"))
-        for i, (change, lines) in enumerate(entries):
-            title = f"Depuis le {change.effective:%d/%m/%Y %H:%M}" + (f" · {change.note}" if change.note else "")
-            row = Adw.ActionRow(title=title, subtitle="\n".join(lines) or "Aucun changement", subtitle_lines=0)
-            row.set_use_markup(False)
-            if i == 0:
-                row.add_suffix(_current_tag())
-            history.add(row)
-        box.append(history)
-
-    # Graphiques
-
-    def _build_charts_page(self) -> Gtk.Widget:
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        outer.append(_toggle_group(CHART_PERIODS, self.chart_days, self._on_chart_period))
-        self.charts_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        outer.append(self.charts_box)
-        return _page(outer, max_width=1100)
-
-    def _on_chart_period(self, name: str | None) -> None:
-        if name:
-            self.chart_days = name
-            self._build_charts()
-
-    def _build_charts(self) -> None:
-        self.charts_dirty = False
-        _clear(self.charts_box)
-        if not HAS_MPL:
-            self.charts_box.append(Adw.StatusPage(
-                icon_name="dialog-warning-symbolic",
-                title="Graphiques indisponibles",
-                description="Installez matplotlib (paquet python3-matplotlib)",
-            ))
-            return
-        try:
-            self._fill_charts()
-        except Exception as exc:  # noqa: BLE001 - un graphique cassé ne doit pas rester silencieux
-            log.exception("échec de l'affichage des graphiques")
-            _clear(self.charts_box)
-            self.charts_box.append(Adw.StatusPage(
-                icon_name="dialog-error-symbolic",
-                title="Graphiques indisponibles",
-                description=f"Erreur : {exc}",
-            ))
-
-    def _fill_charts(self) -> None:
-        from services.charts import compute_stats
-        from services.charts.figures import distribution_figure, figure_png, morning_trend_figure, timeline_figure
-
-        days = int(self.chart_days)
-        since, until = self.state.period_bounds(days)
-        readings = self.state.readings(days=days)
-        changes = self.state.dose_changes()
-        settings = self.state.settings
-        if settings is None:
-            self.charts_box.append(Adw.StatusPage(icon_name="preferences-system-symbolic", title="Protocole à saisir"))
-            return
-
-        stats = compute_stats(readings, settings)
-        summary = Gtk.FlowBox(
-            homogeneous=True, min_children_per_line=2, max_children_per_line=5,
-            selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=12,
-        )
-        summary.add_css_class("summary-tiles")
-        for title, value, tone in (
-            ("Mesures", str(stats.count), "pastel-sage"),
-            ("Moyenne", fmt_g_l(round(stats.mean_mg)) if stats.mean_mg is not None else "-", "pastel-sky"),
-            ("Dans l'objectif", f"{stats.pct_in_range:.0f} %", "pastel-mint"),
-            ("Sous l'objectif", f"{stats.pct_low:.0f} %", "pastel-lavender"),
-            ("Au-dessus", f"{stats.pct_high:.0f} %", "pastel-peach"),
-        ):
-            summary.append(Gtk.FlowBoxChild(child=self._stat_card(title, value, tone), focusable=False))
-        self.charts_box.append(summary)
-
-        theme.register_chart_fonts()
-        palette = theme.chart_palette(Adw.StyleManager.get_default().get_dark())
-        for title, fig in (
-            ("Courbe des glycémies", timeline_figure(readings, changes, settings, since, until, palette=palette)),
-            ("Glycémies du matin et dose du soir", morning_trend_figure(readings, changes, settings, since, until, palette=palette)),
-            ("Répartition", distribution_figure(readings, settings, palette=palette)),
-        ):
-            label = Gtk.Label(label=title, xalign=0)
-            label.add_css_class("title-4")
-            texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(figure_png(fig, dpi=CHART_DPI)))
-            picture = Gtk.Picture(paintable=texture, content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True)
-            picture.set_alternative_text(title)
-            fig_w, fig_h = fig.get_size_inches()
-            picture.set_size_request(-1, round(CHART_WIDTH_PX * fig_h / fig_w))
-            frame = Gtk.Box()
-            frame.add_css_class("chart-card")
-            frame.append(picture)
-            self.charts_box.append(label)
-            self.charts_box.append(frame)
-
-    def _stat_card(self, title: str, value: str, tone: str) -> Gtk.Widget:
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        card.add_css_class("stat-tile")
-        card.add_css_class(tone)
-        v = Gtk.Label(label=value)
-        v.add_css_class("title-2")
-        t = Gtk.Label(label=title, wrap=True, justify=Gtk.Justification.CENTER)
-        t.add_css_class("stat-label")
-        card.append(v)
-        card.append(t)
-        return card
