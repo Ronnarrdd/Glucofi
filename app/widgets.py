@@ -21,6 +21,7 @@ def page(child: Gtk.Widget, max_width: int = 820) -> Gtk.ScrolledWindow:
 
 def toggle_group(options, active: str, on_change) -> Adw.ToggleGroup:
     group = Adw.ToggleGroup(halign=Gtk.Align.CENTER)
+    group.add_css_class("round")
     for name, label in options:
         group.add(Adw.Toggle(name=name, label=label))
     group.set_active_name(active)

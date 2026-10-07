@@ -12,59 +12,19 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk  # noqa: E402
 
+from app import theme  # noqa: E402
 from app.state import AppState  # noqa: E402
 from services.store import Store, default_data_dir  # noqa: E402
 
 APP_ID = "fr.librenard.Glucofi"
 VERSION = "1.0.0"
-ICONS_DIR = Path(__file__).resolve().parent / "icons"
-
-CSS = """
-.dose-value { font-size: 44px; font-weight: 800; }
-.dose-card { padding: 18px 12px; }
-.chart-card { background-color: white; border-radius: 12px; padding: 6px; }
-
-/* Mesures : la couleur ne sert qu'au niveau de la glycémie */
-.summary-card { padding: 18px 20px; }
-.summary-card flowboxchild { padding: 0; }
-.stat-label { font-weight: 600; opacity: 0.75; }
-.stat-value { font-size: 26px; font-weight: 800; }
-.range-bar { border-radius: 999px; background-color: alpha(currentColor, 0.08); }
-.range-segment { min-height: 10px; }
-.range-segment.level-low, .legend-dot.level-low { background-color: var(--error-bg-color); }
-.range-segment.level-in, .legend-dot.level-in { background-color: var(--success-bg-color); }
-.range-segment.level-high, .legend-dot.level-high { background-color: var(--warning-bg-color); }
-.legend-dot { min-width: 10px; min-height: 10px; border-radius: 999px; }
-.measure-day-title { font-size: 17px; font-weight: 700; }
-.measure-row .title { font-weight: 600; font-feature-settings: "tnum"; }
-.marker-badge { min-width: 34px; min-height: 34px; border-radius: 999px; background-color: alpha(currentColor, 0.08); }
-.marker-badge.marker-fasting { background-color: alpha(currentColor, 0.14); }
-.marker-badge.marker-none { opacity: 0.55; }
-.morning-chip, .retained-chip, .excluded-chip, .refused-chip { padding: 3px 10px; border-radius: 999px; background-color: alpha(currentColor, 0.08); }
-.excluded-chip { opacity: 0.75; }
-.refused-chip { color: var(--warning-color); background-color: color-mix(in srgb, var(--warning-bg-color) 20%, transparent); }
-.note-button { opacity: 0.45; }
-.note-button.has-note { opacity: 1; color: var(--accent-color); }
-.note-tag { border-radius: 999px; padding: 4px 12px; }
-.note-tag:checked { background-color: var(--accent-bg-color); color: var(--accent-fg-color); }
-.value-pill { padding: 4px 12px; border-radius: 999px; font-weight: 700; font-size: 15px; }
-.value-pill.level-low { color: var(--error-color); background-color: color-mix(in srgb, var(--error-bg-color) 16%, transparent); }
-.value-pill.level-in { color: var(--success-color); background-color: color-mix(in srgb, var(--success-bg-color) 16%, transparent); }
-.value-pill.level-high { color: var(--warning-color); background-color: color-mix(in srgb, var(--warning-bg-color) 20%, transparent); }
-.level-text-low { color: var(--error-color); }
-.level-text-in { color: var(--success-color); }
-.level-text-high { color: var(--warning-color); }
-"""
 
 
 def install_style(display: Gdk.Display) -> None:
-    """Feuille de style de l'appli et icônes de app/icons (marqueurs repas)."""
-    provider = Gtk.CssProvider()
-    provider.load_from_string(CSS)
-    Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    Gtk.IconTheme.get_for_display(display).add_search_path(str(ICONS_DIR))
+    """Thème de la tablette (app/theme.py, app/style.css, polices) et icônes de app/icons (marqueurs repas)."""
+    theme.install(display)
 
 
 def state_dir() -> Path:

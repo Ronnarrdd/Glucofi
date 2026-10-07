@@ -1,15 +1,21 @@
 """Captures d'écran de chaque onglet, pour vérifier l'interface sans clic manuel.
 
-Usage : python3 -m scripts.screenshots EXPORT.json SORTIE_DIR [default|proposal|onboarding|measures|titration]
-Crée une base de démonstration temporaire (XDG_DATA_HOME), importe l'export,
-démarre le protocole au 1er du mois précédent la dernière mesure.
+Usage :
+    python3 -m scripts.screenshots EXPORT.json SORTIE_DIR [default|proposal|onboarding|measures|titration]
+    python3 -m scripts.screenshots --readme   # refait docs/screenshots (mesures fictives jusqu'à aujourd'hui)
+
+Crée une base de démonstration temporaire, importe l'export, démarre le protocole au 1er du mois
+précédent la dernière mesure. Tourne dans scripts/headless.sh (compositeur sans écran, rendu stable,
+rien ne s'ouvre sur le bureau) ; --display pour capturer sur l'écran courant.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -17,14 +23,17 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+gi.require_version("Graphene", "1.0")
+from gi.repository import Adw, Gdk, GLib, Graphene, Gtk  # noqa: E402
 
 from app.main import APP_ID, install_style  # noqa: E402
 from app.state import AppState  # noqa: E402
-from dataclasses import replace  # noqa: E402
-
 from contracts import DosingSettings, HighTier, LowTier, Meal, NoteTag, Reading, ReadingNote, Titration  # noqa: E402
+from scripts import demo_export, headless  # noqa: E402
 from services.store import Store  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+README_DIR = ROOT / "docs" / "screenshots"
 
 # protocole fictif pour les captures, pas une recommandation
 DEMO_PROTOCOL = DosingSettings(insulin="Insuline de démonstration", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3)
@@ -37,21 +46,41 @@ DEMO_FULL = replace(
     morning_titration=Titration(0.90, 1.60, 1, 2, (LowTier(0.70, 2),), ()),
 )
 
+SCENARIOS = ("default", "proposal", "onboarding", "measures", "titration")
 PAGES = ("today", "charts", "measures", "doses")
+WIDTH, HEIGHT = 1000, 1100
 # scénario « measures » : onglet Mesures en largeur (px) et thème donnés
 MEASURES_SHOTS = {"mesures-clair": (1000, False), "mesures-sombre": (1000, True), "mesures-etroit": (360, False)}
+TITRATION_VIEWS = ("today", "doses", "preferences", "preferences-0.45", "preferences-1")
+# captures du README, en clair à 1000 px : fichier -> (scénario, vues à enchaîner, la dernière est capturée)
+README_SHOTS = {
+    "aujourdhui.png": ("default", ("measures",)),
+    "graphiques.png": ("default", ("charts",)),
+    "premier-lancement.png": ("onboarding", ("today",)),
+    "deux-doses.png": ("titration", ("today",)),
+    "protocole.png": ("titration", ("doses", "preferences", "preferences-0.45")),
+}
 
 
-def snapshot(window: Gtk.Window, path: Path) -> bool:
-    """False si la fenêtre n'a encore rien dessiné (changement de thème en cours) : réessayer plus tard."""
+def render(window: Gtk.Window) -> Gdk.Texture | None:
+    """Rendu de la fenêtre, pixel (0, 0) en haut à gauche ; None si elle n'a encore rien dessiné."""
     width, height = window.get_width(), window.get_height()
     paintable = Gtk.WidgetPaintable.new(window)
     snap = Gtk.Snapshot()
     paintable.snapshot(snap, width, height)
     node = snap.to_node()
     if node is None:
+        return None
+    area = Graphene.Rect()
+    area.init(0, 0, width, height)
+    return window.get_renderer().render_texture(node, area)
+
+
+def snapshot(window: Gtk.Window, path: Path) -> bool:
+    """False si la fenêtre n'a encore rien dessiné : réessayer plus tard."""
+    texture = render(window)
+    if texture is None:
         return False
-    texture = window.get_renderer().render_texture(node, None)
     texture.save_to_png(str(path))
     print(f"capture : {path}")
     return True
@@ -107,10 +136,15 @@ def _add_demo_notes(state: AppState) -> None:
         state.set_note(mornings[2], ReadingNote((NoteTag.SIDE_EFFECT,), "nausées après l'injection"))
 
 
-def main() -> int:
-    export, out_dir = Path(sys.argv[1]), Path(sys.argv[2])
-    scenario = sys.argv[3] if len(sys.argv) > 3 else "default"
-    out_dir.mkdir(parents=True, exist_ok=True)
+def demo_export_file(days: int = 60, end: date | None = None) -> Path:
+    """Export fictif de scripts.demo_export jusqu'à `end` (aujourd'hui par défaut), dans un fichier temporaire."""
+    path = Path(tempfile.mkdtemp(prefix="glucofi-demo-export-")) / "demo.json"
+    path.write_text(json.dumps(demo_export.build(days, end or date.today()), ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def demo_state(export: Path, scenario: str) -> AppState:
+    """Base de démonstration temporaire pour `scenario` (voir SCENARIOS)."""
     data_dir = Path(tempfile.mkdtemp(prefix="glucofi-demo-"))
     state = AppState(Store(data_dir / "glucofi.db"), data_dir)
     state.import_file(export)
@@ -124,64 +158,124 @@ def main() -> int:
     if scenario == "titration":
         state.configure_protocol(DEMO_FULL, "Consultation (démonstration)")
         state.store.import_readings(_both_doses_until_today(), "démo")
-    if scenario == "default":
-        pages = list(PAGES)
-    elif scenario == "measures":
-        pages = list(MEASURES_SHOTS)
-    elif scenario == "titration":
-        pages = ["today", "doses", "preferences", "preferences-0.45", "preferences-1"]
+    return state
+
+
+def show(window, view: str) -> None:
+    """Affiche une vue : un onglet (PAGES), « preferences », ou « preferences-F » (dialogue défilé à la fraction F)."""
+    if view == "preferences":
+        window.show_preferences()
+    elif view.startswith("preferences-"):
+        _scroll_dialog(window, float(view.split("-")[1]))
     else:
-        pages = ["today"]
+        window.stack.set_visible_child_name(view)
 
+
+def set_dark(dark: bool) -> None:
+    scheme = Adw.ColorScheme.FORCE_DARK if dark else Adw.ColorScheme.FORCE_LIGHT
+    Adw.StyleManager.get_default().set_color_scheme(scheme)
+
+
+# (scénario, vue, fichier ou None pour une vue intermédiaire, largeur, sombre)
+Shot = tuple[str, str, Path | None, int, bool]
+
+
+def scenario_shots(scenario: str, out_dir: Path) -> list[Shot]:
+    if scenario == "measures":
+        return [("measures", "measures", out_dir / f"{name}-measures.png", width, dark)
+                for name, (width, dark) in MEASURES_SHOTS.items()]
+    views = {"default": PAGES, "titration": TITRATION_VIEWS}.get(scenario, ("today",))
+    return [(scenario, view, out_dir / f"{view}-{scenario}.png", WIDTH, False) for view in views]
+
+
+def readme_shots(out_dir: Path) -> list[Shot]:
+    shots: list[Shot] = []
+    for name, (scenario, views) in README_SHOTS.items():
+        shots += [(scenario, view, None, WIDTH, False) for view in views[:-1]]
+        shots.append((scenario, views[-1], out_dir / name, WIDTH, False))
+    return shots
+
+
+def run(export: Path, shots: list[Shot]) -> int:
+    """Enchaîne les captures ; une fenêtre (et une base) par scénario. 1 si une capture reste vide."""
     app = Adw.Application(application_id=APP_ID + ".Screenshots")
+    states: dict[str, AppState] = {}
+    current: dict[str, object] = {"scenario": None, "window": None}
+    failed: list[str] = []
 
-    def on_activate(application):
-        from gi.repository import Gdk
-
-        install_style(Gdk.Display.get_default())
+    def window_for(application, scenario: str):
+        if current["scenario"] == scenario:
+            return current["window"], False
         from app.window import MainWindow
 
-        window = MainWindow(application=application, state=state)
-        window.set_default_size(1000, 1100)
+        if current["window"] is not None:
+            current["window"].destroy()
+        if scenario not in states:
+            states[scenario] = demo_state(export, scenario)
+        window = MainWindow(application=application, state=states[scenario])
+        window.set_default_size(WIDTH, HEIGHT)
         window.present()
+        current.update(scenario=scenario, window=window)
+        return window, True
 
-        def capture(name, attempt=0):
-            if not snapshot(window, out_dir / f"{name}-{scenario}.png"):
-                if attempt >= 20:
-                    print(f"capture vide après 6 s : {name}", file=sys.stderr)
-                    application.quit()
+    def on_activate(application):
+        install_style(Gdk.Display.get_default())
+        application.hold()
+
+        def capture(window, path, attempt=0):
+            if path is not None and not snapshot(window, path):
+                if attempt < 20:
+                    GLib.timeout_add(300, capture, window, path, attempt + 1)
                     return False
-                GLib.timeout_add(300, capture, name, attempt + 1)
-                return False
-            if pages:
+                print(f"capture vide après 6 s : {path.name}", file=sys.stderr)
+                failed.append(path.name)
+            if shots:
                 step()
             else:
+                application.release()
                 application.quit()
             return False
 
         def step():
-            name = pages.pop(0)
-            if name in MEASURES_SHOTS:
-                width, dark = MEASURES_SHOTS[name]
-                scheme = Adw.ColorScheme.FORCE_DARK if dark else Adw.ColorScheme.FORCE_LIGHT
-                Adw.StyleManager.get_default().set_color_scheme(scheme)
-                window.set_default_size(width, 1100)
-                window.stack.set_visible_child_name("measures")
-            elif name == "preferences":
-                window.show_preferences()
-            elif name.startswith("preferences-"):
-                _scroll_dialog(window, float(name.split("-")[1]))
-            else:
-                window.stack.set_visible_child_name(name)
-            GLib.timeout_add(900, capture, name)
-            return False
+            scenario, view, path, width, dark = shots.pop(0)
+            window, new = window_for(application, scenario)
+            set_dark(dark)
+            window.set_default_size(width, HEIGHT)
 
-        GLib.timeout_add(1200, step)
+            def go():
+                show(window, view)
+                GLib.timeout_add(900, capture, window, path)
+                return False
+
+            GLib.timeout_add(1200 if new else 0, go)
+
+        step()
 
     app.connect("activate", on_activate)
-    return app.run([])
+    app.run([])
+    return 1 if failed else 0
+
+
+def main(argv: list[str]) -> int:
+    display = "--display" in argv
+    args = [a for a in argv if a != "--display"]
+    if not display and not headless.in_headless():
+        headless.reexec("scripts.screenshots", argv)
+    if args[:1] == ["--readme"]:
+        README_DIR.mkdir(parents=True, exist_ok=True)
+        return run(demo_export_file(), readme_shots(README_DIR))
+    if len(args) < 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    export, out_dir = Path(args[0]), Path(args[1])
+    scenario = args[2] if len(args) > 2 else "default"
+    if scenario not in SCENARIOS:
+        print(f"scénario inconnu : {scenario} ({', '.join(SCENARIOS)})", file=sys.stderr)
+        return 2
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return run(export, scenario_shots(scenario, out_dir))
 
 
 if __name__ == "__main__":
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplcfg")
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

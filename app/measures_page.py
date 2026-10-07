@@ -6,6 +6,7 @@ app.measures ; ce module ne fait qu'assembler les widgets.
 
 from __future__ import annotations
 
+import itertools
 from typing import Callable
 
 from gi.repository import Adw, GLib, Gtk, Pango
@@ -26,6 +27,7 @@ from app.measures import (
     measure_view,
 )
 from app.state import AppState
+from app.theme import SUMMARY_PASTELS
 from contracts import Reading
 from app.widgets import clear, label, page, toggle_group
 from services.charts import PERIODS
@@ -171,22 +173,28 @@ class MeasuresPage:
         )
 
     def _summary_card(self, summary: MeasureSummary) -> Gtk.Widget:
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        card.add_css_class("card")
-        card.add_css_class("summary-card")
-
+        """Tuiles pastel posées sur le fond, puis une carte blanche pour la barre de répartition et sa légende."""
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         tiles = Gtk.FlowBox(
             homogeneous=True, min_children_per_line=2, max_children_per_line=4,
             selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=12,
         )
-        for tile in summary.tiles:
+        tiles.add_css_class("summary-tiles")
+        for tile, tone in zip(summary.tiles, itertools.cycle(SUMMARY_PASTELS)):
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            box.append(label(tile.label, "stat-label", xalign=0))
+            box.add_css_class("summary-tile")
+            box.add_css_class(tone)
+            box.append(label(tile.label, "stat-label", xalign=0, wrap=True))
             box.append(label(tile.value, "stat-value", "numeric", xalign=0))
-            box.append(label(tile.detail, "caption", "dim-label", "numeric", xalign=0))
+            box.append(label(tile.detail, "caption", "dim-label", "numeric", xalign=0, wrap=True))
             child = Gtk.FlowBoxChild(child=box, focusable=False)
             tiles.append(child)
-        card.append(tiles)
+        outer.append(tiles)
+
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        card.add_css_class("card")
+        card.add_css_class("summary-card")
+        outer.append(card)
 
         bar = Gtk.Grid(column_homogeneous=True, overflow=Gtk.Overflow.HIDDEN)
         bar.add_css_class("range-bar")
@@ -213,7 +221,7 @@ class MeasuresPage:
             item.append(label(segment.bounds, "caption", "dim-label", "numeric", valign=Gtk.Align.BASELINE_CENTER))
             legend.append(item)
         card.append(legend)
-        return card
+        return outer
 
     def _day_group(self, day: MeasureDay) -> Gtk.Widget:
         group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -226,9 +234,10 @@ class MeasuresPage:
         if day.morning is not None:
             chip = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER, tooltip_text=f"{RETAINED_TOOLTIP}. {day.morning.level_label}")
             chip.add_css_class("morning-chip")
+            chip.add_css_class(f"level-{day.morning.level}")
             chip.append(Gtk.Image(icon_name=RETAINED_ICON))
             chip.append(label("Matin", "caption"))
-            chip.append(label(day.morning.value, "caption-heading", "numeric", f"level-text-{day.morning.level}"))
+            chip.append(label(day.morning.value, "caption-heading", "numeric"))
             header.append(chip)
         group.append(header)
 

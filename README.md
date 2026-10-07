@@ -26,7 +26,7 @@ Application GTK4 / libadwaita pour Linux (Gnome) :
   <img src="docs/screenshots/deux-doses.png" width="40%" alt="Onglet Aujourd'hui : proposition pour la dose du matin et pour la dose du soir, chacune avec son bouton Valider">
   <img src="docs/screenshots/protocole.png" width="40%" alt="Préférences : paliers de baisse et de hausse, et ajustement de la dose du matin selon la glycémie du soir">
 </p>
-<p align="center"><sub>Captures réalisées avec des mesures et un protocole fictifs (<code>python3 -m scripts.demo_export</code>).</sub></p>
+<p align="center"><sub>Captures réalisées avec des mesures et un protocole fictifs (<code>python3 -m scripts.screenshots --readme</code>).</sub></p>
 
 > [!WARNING]
 > **Glucofi n'est pas un dispositif médical et ne remplace pas l'avis d'un médecin.**
@@ -115,6 +115,14 @@ Si Glucofi affiche « Accès USB au lecteur refusé », débrancher et rebranche
 
 Données : `~/.local/share/glucofi/glucofi.db` (SQLite). Journal : `~/.local/state/glucofi/glucofi.log` (lectures, imports, validations de dose).
 
+## Apparence
+
+Glucofi sur PC reprend le thème de Glucofi pour Android : fond sauge, cartes blanches arrondies, tuiles pastel, doses du matin (pêche) et du soir (lavande), pastilles et boutons en pilule, mêmes couleurs de niveau (sous, dans, au-dessus de l'objectif), polices **Fredoka** (titres et chiffres) et **Nunito** (texte). La mise en page reste celle du PC. Le thème suit le mode clair ou sombre de Gnome (Paramètres > Apparence), graphiques compris ; le PDF pour le médecin garde ses couleurs d'impression.
+
+- Couleurs : `app/theme.py`, copiées de `Theme.kt` de la tablette ; un test les compare quand le dépôt Android est à côté (`../GlucofiAndroid`) ou quand ce code est le sous-arbre `glucofi/` du dépôt Android. `app/style.css` n'emploie que des variables `var(--glucofi-*)`.
+- Polices : `app/fonts/`, licence SIL OFL 1.1 (texte dans `app/fonts/licences/` et dans À propos). Elles sont chargées par l'application, sans installation dans le système (Pango 1.56 ou plus récent, sinon la police du système). `python3 -m scripts.fonts` les régénère depuis google/fonts à un commit figé (nécessite `python3-fonttools`) ; la flèche → de l'historique du protocole vient de la police du système.
+- Lisibilité : contraste WCAG d'au moins 4,5:1 pour le texte et 3:1 pour les formes, en clair et en sombre, vérifié sur les couleurs par les tests et sur l'écran rendu par `python3 -m evals.theme_render`.
+
 ## Architecture
 
 ```
@@ -123,13 +131,17 @@ services/device/   lancement d'accuchek, détection USB (sysfs), parsing (mesure
   accuchek-src/    accuchek (git subtree de github.com/Ronnarrdd/accuchek)
 services/store/    SQLite : mesures et marqueurs (import idempotent), notes, lecteurs, doses, historique du protocole, réglages, journal d'imports, export et fusion
 services/dosing/   moteur de titration pur et déterministe
-services/charts/   statistiques + figures matplotlib (écran et PDF)
+services/charts/   statistiques + figures matplotlib (écran et PDF), palette par figure (palette.py)
 services/report/   rapport PDF (reportlab)
 services/tablet/   synchronisation USB avec l'app Android (adb, contrat contracts/tablet_sync.py)
 app/               interface GTK4 / libadwaita (state.py, measures.py = logique sans GTK, testée ; icons/ = icônes des marqueurs)
-evals/             rejeu du moteur et de l'onglet Mesures contre des oracles indépendants
+  theme.py         couleurs claires et sombres de la tablette, variables libadwaita, contrastes, palette des graphiques
+  style.css        feuille de style (uniquement des var(--glucofi-*))
+  fonts/           Fredoka et Nunito (statiques, sous-ensemble latin) + licences OFL
+evals/             rejeu du moteur, onglet Mesures, rendu du thème, contre des oracles indépendants
 packaging/         règle udev, .desktop, icône, installation système
-scripts/           gate.sh (tests rapides), screenshots.py (captures de l'interface)
+scripts/           gate.sh (tests rapides), screenshots.py (captures de l'interface), fonts.py (polices),
+                   headless.sh (compositeur sans écran pour les captures et l'eval du thème)
 ```
 
 accuchek se met à jour depuis son dépôt :
@@ -145,7 +157,9 @@ git config core.hooksPath .githooks        # hook pre-commit : tests + refus des
 scripts/gate.sh                            # tests rapides
 python3 -m evals.replay_history --synthetic 200
 python3 -m evals.measures_view --synthetic 100  # onglet Mesures : toutes les combinaisons de filtres
+python3 -m evals.theme_render              # thème : contraste, encre, polices, débordement (clair, sombre, 1000 et 360 px)
 python3 -m scripts.screenshots demo.json /tmp/captures measures  # Mesures en clair, sombre et 360 px
+python3 -m scripts.screenshots --readme    # refait docs/screenshots (mesures fictives jusqu'à aujourd'hui)
 python3 -m evals.device_smoke              # lecture réelle du lecteur branché (matériel requis)
 python3 -m evals.accuchek_replay           # rejoue les traces USB (synthétiques + ~/.local/share/glucofi/traces)
 python3 -m evals.accuchek_errors           # pannes injectées (timeout, débranchement, abandon)
@@ -154,7 +168,7 @@ python3 -m evals.store_migration --db COPIE.db  # rapport avant/après d'une mig
 python3 -m evals.store_merge               # fusion PC/tablette : 60 scénarios contre un oracle
 ```
 
-L'eval de rejeu rejoue chaque jour d'un historique (proposition à 20:00, chaque dose qui change est validée), avec le protocole simple puis un protocole complet (paliers, dose du matin sur la glycémie du soir), compare chaque dose à un oracle réécrit depuis le texte des règles et vérifie les invariants : dose jamais négative, au plus un changement par dose et par jour, l'autre dose jamais touchée, pas conformes aux paliers, preuves conformes et postérieures au dernier changement de la dose. Seuil : 100 %. L'eval de fusion fait vivre deux bases (PC et tablette) avec lectures, notes, doses, protocole et fusions dans les deux sens, et vérifie la convergence contre un oracle. Seuil : 100 %. L'eval de l'onglet Mesures vérifie, pour chaque combinaison de filtres, que chaque mesure apparaît une fois, dans l'ordre, avec le bon niveau, que la glycémie retenue est celle du moteur et que la barre de répartition reste fidèle aux pourcentages. Seuil : 100 %. Les rapports CSV sont écrits dans `/tmp/glucofi-eval/`. Les evals utilisent un protocole fictif, qui n'est pas une recommandation.
+L'eval de rejeu rejoue chaque jour d'un historique (proposition à 20:00, chaque dose qui change est validée), avec le protocole simple puis un protocole complet (paliers, dose du matin sur la glycémie du soir), compare chaque dose à un oracle réécrit depuis le texte des règles et vérifie les invariants : dose jamais négative, au plus un changement par dose et par jour, l'autre dose jamais touchée, pas conformes aux paliers, preuves conformes et postérieures au dernier changement de la dose. Seuil : 100 %. L'eval de fusion fait vivre deux bases (PC et tablette) avec lectures, notes, doses, protocole et fusions dans les deux sens, et vérifie la convergence contre un oracle. Seuil : 100 %. L'eval de l'onglet Mesures vérifie, pour chaque combinaison de filtres, que chaque mesure apparaît une fois, dans l'ordre, avec le bon niveau, que la glycémie retenue est celle du moteur et que la barre de répartition reste fidèle aux pourcentages. Seuil : 100 %. L'eval du thème rend l'application de démonstration (deux propositions de dose, notes, historique du protocole) en clair et en sombre, à 1000 et 360 px de large, sur les onglets Aujourd'hui, Graphiques, Mesures, Doses et les Préférences, et vérifie chaque libellé visible : contraste WCAG contre le fond réellement peint, encre (les pixels du texte atteignent le contraste annoncé, ce qui attrape une transparence CSS), polices résolues par Pango (Fredoka ou Nunito, aucun glyphe manquant), aucun débordement de la fenêtre ; et le fond de chaque onglet. Seuil : 100 %. Les captures et cette eval tournent dans un compositeur sans écran (`scripts/headless.sh`, mutter) : rien ne s'ouvre sur le bureau et le rendu est stable ; `--display` les lance sur l'écran courant. Les rapports CSV sont écrits dans `/tmp/glucofi-eval/`. Les evals utilisent un protocole fictif, qui n'est pas une recommandation.
 
 Les exports de mesures (`test.json`, `mesures*.json`), `raw/`, `traces/` et `*.db` contiennent des données de santé : ils sont exclus du dépôt (`.gitignore` + hook).
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
+from app import theme
 from app.dialogs import manual_dose_dialog, note_dialog, onboarding_dialog, preferences_dialog
 from app.measures_page import MeasuresPage
 from app.protocol import DOSE_NAMES, evening_rule_text, morning_rule_text, protocol_history, protocol_sections
@@ -46,10 +47,11 @@ CHART_WIDTH_PX = 860
 CHART_PERIODS = (("14", "14 jours"), ("30", "30 jours"), ("90", "90 jours"))
 DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 ALERT_STYLES = {
-    AlertLevel.DANGER: ("dialog-error-symbolic", "error"),
-    AlertLevel.WARNING: ("dialog-warning-symbolic", "warning"),
-    AlertLevel.INFO: ("dialog-information-symbolic", None),
+    AlertLevel.DANGER: ("dialog-error-symbolic", "notice-danger"),
+    AlertLevel.WARNING: ("dialog-warning-symbolic", "notice-warning"),
+    AlertLevel.INFO: ("dialog-information-symbolic", "notice-info"),
 }
+MOMENT_CSS = {DoseTarget.MORNING: "moment-morning", DoseTarget.EVENING: "moment-evening"}
 
 
 def _glycemia_class(reading: Reading, state: AppState, target: DoseTarget = DoseTarget.EVENING) -> str:
@@ -70,6 +72,12 @@ def _value_label(reading: Reading, state: AppState, target: DoseTarget = DoseTar
 
 def _meal_suffix(reading: Reading) -> str:
     return f" · {MEAL_LABELS_FR[reading.meal]}" if reading.meal is not None else ""
+
+
+def _current_tag() -> Gtk.Label:
+    tag = Gtk.Label(label="En cours", valign=Gtk.Align.CENTER)
+    tag.add_css_class("tag-current")
+    return tag
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -97,8 +105,9 @@ class MainWindow(Adw.ApplicationWindow):
         header = Adw.HeaderBar()
         switcher = Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE)
         header.set_title_widget(switcher)
+        fetch_content = Adw.ButtonContent(icon_name="view-refresh-symbolic", label="Récupérer")
         self.fetch_button = Gtk.Button(
-            child=Adw.ButtonContent(icon_name="view-refresh-symbolic", label="Récupérer"),
+            child=fetch_content,
             tooltip_text="Lire les mesures du lecteur Accu-Chek branché en USB",
         )
         self.fetch_button.add_css_class("suggested-action")
@@ -138,11 +147,21 @@ class MainWindow(Adw.ApplicationWindow):
         toolbar.set_content(self.toasts)
         self.set_content(toolbar)
 
-        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600sp"))
-        breakpoint.add_setter(switcher_bar, "reveal", True)
-        breakpoint.add_setter(switcher, "visible", False)
-        self.measures.add_narrow_setters(breakpoint)
-        self.add_breakpoint(breakpoint)
+        def narrow(condition: str) -> Adw.Breakpoint:
+            breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(condition))
+            breakpoint.add_setter(switcher_bar, "reveal", True)
+            breakpoint.add_setter(switcher, "visible", False)
+            self.measures.add_narrow_setters(breakpoint)
+            self.add_breakpoint(breakpoint)
+            return breakpoint
+
+        narrow("max-width: 600sp")
+        # le dernier point de rupture vérifié l'emporte : à 360 px, avec réduire, agrandir et fermer dans la
+        # barre, « Récupérer » passe en icône seule (son infobulle garde le texte)
+        narrow("max-width: 400sp").add_setter(fetch_content, "label", "")
+        style_manager = Adw.StyleManager.get_default()
+        dark_handler = style_manager.connect("notify::dark", self._on_dark_changed)
+        self.connect("destroy", lambda _w: style_manager.disconnect(dark_handler))
 
         self.refresh()
         if self.state.needs_onboarding:
@@ -457,6 +476,10 @@ class MainWindow(Adw.ApplicationWindow):
             website="https://github.com/Ronnarrdd/Glucofi",
             issue_url="https://github.com/Ronnarrdd/Glucofi/issues",
         )
+        for family in (theme.DISPLAY_FONT, theme.TEXT_FONT):
+            licence = theme.FONT_DIR / "licences" / f"{family}-OFL.txt"
+            if licence.is_file():
+                about.add_legal_section(f"Police {family}", None, Gtk.License.CUSTOM, licence.read_text(encoding="utf-8"))
         about.present(self)
 
     # Rafraîchissement
@@ -473,6 +496,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_page_changed(self, *_args) -> None:
         if self.stack.get_visible_child_name() == "charts" and self.charts_dirty:
             self._build_charts()
+
+    def _on_dark_changed(self, *_args) -> None:
+        """Les graphiques sont des images : refaites aux couleurs du thème clair ou sombre."""
+        self.charts_dirty = True
+        self._on_page_changed()
 
     # Aujourd'hui
 
@@ -493,10 +521,9 @@ class MainWindow(Adw.ApplicationWindow):
             banner.set_use_markup(False)
             icon, css = ALERT_STYLES[alert.level]
             banner.add_prefix(Gtk.Image(icon_name=icon))
-            if css:
-                banner.add_css_class(css)
             frame = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
             frame.add_css_class("boxed-list")
+            frame.add_css_class(css)
             frame.append(banner)
             box.append(frame)
 
@@ -507,10 +534,10 @@ class MainWindow(Adw.ApplicationWindow):
             adjustment = proposal.adjustment(target)
             if adjustment is not None and adjustment.changes_dose:
                 doses.append(self._dose_card(
-                    DOSE_TARGET_LABELS_FR[target], f"{adjustment.proposed_ui} UI", f"proposé (actuellement {ui} UI)", accent=True,
+                    target, f"{adjustment.proposed_ui} UI", f"proposé (actuellement {ui} UI)", proposed=True,
                 ))
             else:
-                doses.append(self._dose_card(DOSE_TARGET_LABELS_FR[target], f"{ui} UI", insulin))
+                doses.append(self._dose_card(target, f"{ui} UI", insulin))
         box.append(doses)
 
         for adjustment in proposal.adjustments:
@@ -592,18 +619,17 @@ class MainWindow(Adw.ApplicationWindow):
             group.add(row)
         return group
 
-    def _dose_card(self, title: str, value: str, subtitle: str, accent: bool = False) -> Gtk.Widget:
+    def _dose_card(self, target: DoseTarget, value: str, subtitle: str, proposed: bool = False) -> Gtk.Widget:
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         card.add_css_class("card")
         card.add_css_class("dose-card")
-        heading = Gtk.Label(label=title)
+        card.add_css_class(MOMENT_CSS[target])
+        heading = Gtk.Label(label=DOSE_TARGET_LABELS_FR[target])
         heading.add_css_class("title-4")
         number = Gtk.Label(label=value)
         number.add_css_class("dose-value")
-        if accent:
-            number.add_css_class("accent")
-        sub = Gtk.Label(label=subtitle, wrap=True, justify=Gtk.Justification.CENTER)
-        sub.add_css_class("dim-label")
+        sub = Gtk.Label(label=subtitle, wrap=True, justify=Gtk.Justification.CENTER, halign=Gtk.Align.CENTER)
+        sub.add_css_class("status-pill" if proposed else "dim-label")
         for widget in (heading, number, sub):
             card.append(widget)
         return card
@@ -657,10 +683,7 @@ class MainWindow(Adw.ApplicationWindow):
             )
             row.set_use_markup(False)
             if i == 0:
-                badge = Gtk.Label(label="En cours", valign=Gtk.Align.CENTER)
-                badge.add_css_class("accent")
-                badge.add_css_class("heading")
-                row.add_suffix(badge)
+                row.add_suffix(_current_tag())
             group.add(row)
         box.append(group)
         self._build_protocol(box)
@@ -688,10 +711,7 @@ class MainWindow(Adw.ApplicationWindow):
             row = Adw.ActionRow(title=title, subtitle="\n".join(lines) or "Aucun changement", subtitle_lines=0)
             row.set_use_markup(False)
             if i == 0:
-                badge = Gtk.Label(label="En cours", valign=Gtk.Align.CENTER)
-                badge.add_css_class("accent")
-                badge.add_css_class("heading")
-                row.add_suffix(badge)
+                row.add_suffix(_current_tag())
             history.add(row)
         box.append(history)
 
@@ -744,21 +764,27 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         stats = compute_stats(readings, settings)
-        summary = Gtk.Box(spacing=12, homogeneous=True)
-        for title, value in (
-            ("Mesures", str(stats.count)),
-            ("Moyenne", fmt_g_l(round(stats.mean_mg)) if stats.mean_mg is not None else "-"),
-            ("Dans l'objectif", f"{stats.pct_in_range:.0f} %"),
-            ("Sous l'objectif", f"{stats.pct_low:.0f} %"),
-            ("Au-dessus", f"{stats.pct_high:.0f} %"),
+        summary = Gtk.FlowBox(
+            homogeneous=True, min_children_per_line=2, max_children_per_line=5,
+            selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=12,
+        )
+        summary.add_css_class("summary-tiles")
+        for title, value, tone in (
+            ("Mesures", str(stats.count), "pastel-sage"),
+            ("Moyenne", fmt_g_l(round(stats.mean_mg)) if stats.mean_mg is not None else "-", "pastel-sky"),
+            ("Dans l'objectif", f"{stats.pct_in_range:.0f} %", "pastel-mint"),
+            ("Sous l'objectif", f"{stats.pct_low:.0f} %", "pastel-lavender"),
+            ("Au-dessus", f"{stats.pct_high:.0f} %", "pastel-peach"),
         ):
-            summary.append(self._stat_card(title, value))
+            summary.append(Gtk.FlowBoxChild(child=self._stat_card(title, value, tone), focusable=False))
         self.charts_box.append(summary)
 
+        theme.register_chart_fonts()
+        palette = theme.chart_palette(Adw.StyleManager.get_default().get_dark())
         for title, fig in (
-            ("Courbe des glycémies", timeline_figure(readings, changes, settings, since, until)),
-            ("Glycémies du matin et dose du soir", morning_trend_figure(readings, changes, settings, since, until)),
-            ("Répartition", distribution_figure(readings, settings)),
+            ("Courbe des glycémies", timeline_figure(readings, changes, settings, since, until, palette=palette)),
+            ("Glycémies du matin et dose du soir", morning_trend_figure(readings, changes, settings, since, until, palette=palette)),
+            ("Répartition", distribution_figure(readings, settings, palette=palette)),
         ):
             label = Gtk.Label(label=title, xalign=0)
             label.add_css_class("title-4")
@@ -773,14 +799,14 @@ class MainWindow(Adw.ApplicationWindow):
             self.charts_box.append(label)
             self.charts_box.append(frame)
 
-    def _stat_card(self, title: str, value: str) -> Gtk.Widget:
+    def _stat_card(self, title: str, value: str, tone: str) -> Gtk.Widget:
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        card.add_css_class("card")
-        card.add_css_class("dose-card")
+        card.add_css_class("stat-tile")
+        card.add_css_class(tone)
         v = Gtk.Label(label=value)
         v.add_css_class("title-2")
-        t = Gtk.Label(label=title)
-        t.add_css_class("dim-label")
+        t = Gtk.Label(label=title, wrap=True, justify=Gtk.Justification.CENTER)
+        t.add_css_class("stat-label")
         card.append(v)
         card.append(t)
         return card

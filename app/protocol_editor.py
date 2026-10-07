@@ -31,7 +31,8 @@ class TierList:
 
     def add(self, values: dict) -> None:
         row = Adw.PreferencesRow(title=self.label)
-        line = Gtk.Box(spacing=12, margin_top=8, margin_bottom=8, margin_start=12, margin_end=6)
+        # tient dans 360 px (dialogue étroit) : espacement 8, champs de 4 caractères (« 0,60 », « 2,20 »)
+        line = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8, margin_start=12, margin_end=6)
         title = Gtk.Label(xalign=0, valign=Gtk.Align.CENTER)
         line.append(title)
         fields = Adw.WrapBox(child_spacing=12, line_spacing=6, hexpand=True, halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
@@ -39,7 +40,7 @@ class TierList:
         for name, before, placeholder, unit in self.columns:
             unit_box = Gtk.Box(spacing=6)
             unit_box.append(Gtk.Label(label=before))
-            entry = Gtk.Entry(width_chars=5, max_width_chars=5, placeholder_text=placeholder, text=values.get(name, ""))
+            entry = Gtk.Entry(width_chars=4, max_width_chars=4, placeholder_text=placeholder, text=values.get(name, ""))
             entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
             entry.update_property([Gtk.AccessibleProperty.LABEL], [f"{before} ({unit})"])
             entry.connect("changed", lambda e: e.remove_css_class("error"))
