@@ -17,6 +17,8 @@ from app.protocol import (  # noqa: F401  (réexportés : dialogues, pont Androi
     parse_g_l,
     protocol_diff,
     protocol_from_form,
+    protocol_history,
+    protocol_sections,
 )
 from contracts import (
     REFERENCE_LABELS_FR,
@@ -212,6 +214,28 @@ class AppState:
 
     def dose_changes(self) -> list[DoseChange]:
         return self.store.dose_changes()
+
+    def report_input(self, days: int):
+        """Tout ce que le rapport PDF pour le médecin lit (PC et tablette) sur les `days` derniers jours."""
+        from services.report.pdf import ReportInput
+
+        since, until = self.period_bounds(days)
+        return ReportInput(
+            readings=self.readings(),
+            changes=self.dose_changes(),
+            settings=self.settings,
+            since=since,
+            until=until,
+            patient_name=self.patient_name,
+            proposal=self.proposal(),
+            injections=self.injections(),
+            generated_at=self._now(),
+            protocol=protocol_sections(self.settings),
+            protocol_history=[
+                (f"{change.effective:%d/%m/%Y %H:%M}" + (f" · {change.note}" if change.note else ""), lines)
+                for change, lines in protocol_history(self.protocol_changes())
+            ],
+        )
 
     def proposal(self) -> DoseProposal | None:
         changes = self.store.dose_changes()

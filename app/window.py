@@ -24,7 +24,6 @@ from app.components import NavBar, label
 from app.dialogs import manual_dose_dialog, onboarding_dialog, preferences_dialog
 from app.doses_page import DosesPage
 from app.measures_page import MeasuresPage
-from app.protocol import protocol_history, protocol_sections
 from app.state import AppState, import_message, merge_message
 from app.today_page import TodayPage
 from contracts.tablet_sync import PC_FILE
@@ -407,24 +406,9 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.save(self, None, done)
 
     def _build_pdf(self, path: Path, days: int) -> None:
-        from services.report.pdf import ReportInput, build_report
+        from services.report.pdf import build_report
 
-        since, until = self.state.period_bounds(days)
-        data = ReportInput(
-            readings=self.state.readings(),
-            changes=self.state.dose_changes(),
-            settings=self.state.settings,
-            since=since,
-            until=until,
-            patient_name=self.state.patient_name,
-            proposal=self.state.proposal(),
-            injections=self.state.injections(),
-            protocol=protocol_sections(self.state.settings),
-            protocol_history=[
-                (f"{change.effective:%d/%m/%Y %H:%M}" + (f" · {change.note}" if change.note else ""), lines)
-                for change, lines in protocol_history(self.state.protocol_changes())
-            ],
-        )
+        data = self.state.report_input(days)
         self.set_busy(True)
 
         def worker():

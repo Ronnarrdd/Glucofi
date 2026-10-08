@@ -14,7 +14,6 @@ from gi.repository import Adw, Gdk, GLib, Gtk
 from app import theme
 from app.components import FilterChips, Notice, Page, Section, clear, label, screen_title
 from app.state import AppState
-from services.dosing import fmt_g_l
 
 log = logging.getLogger("glucofi.ui")
 
@@ -68,40 +67,25 @@ class ChartsPage:
             self.body.append(Notice(f"Graphiques indisponibles : {exc}", "danger"))
 
     def _fill(self) -> None:
-        from services.charts import compute_stats
-        from services.charts.figures import distribution_figure, figure_png, morning_trend_figure, timeline_figure
+        from app.charts_data import chart_data, chart_figures
+        from services.charts.figures import figure_png
 
-        settings = self.state.settings
-        if settings is None:
+        data = chart_data(self.state, int(self.days))
+        if data is None:
             self.body.append(Notice("Saisissez le protocole pour voir les graphiques par rapport à l'objectif.", "info"))
             return
-        days = int(self.days)
-        since, until = self.state.period_bounds(days)
-        readings = self.state.readings(days=days)
-        changes = self.state.dose_changes()
-        stats = compute_stats(readings, settings)
         tiles = Gtk.FlowBox(
             homogeneous=True, min_children_per_line=2, max_children_per_line=5,
             selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=12,
         )
         tiles.add_css_class("summary-tiles")
-        for (title, value), tone in zip((
-            ("Mesures", str(stats.count)),
-            ("Moyenne", fmt_g_l(round(stats.mean_mg)) if stats.mean_mg is not None else "-"),
-            ("Dans l'objectif", f"{stats.pct_in_range:.0f} %"),
-            ("Sous l'objectif", f"{stats.pct_low:.0f} %"),
-            ("Au-dessus", f"{stats.pct_high:.0f} %"),
-        ), STAT_PASTELS):
+        for (title, value), tone in zip(data.tiles, STAT_PASTELS):
             tiles.append(Gtk.FlowBoxChild(child=stat_tile(title, value, tone), focusable=False))
         self.body.append(tiles)
 
         theme.register_chart_fonts()
         palette = theme.chart_palette(Adw.StyleManager.get_default().get_dark())
-        for title, fig in (
-            ("Courbe des glycémies", timeline_figure(readings, changes, settings, since, until, palette=palette)),
-            ("Glycémies du matin et dose du soir", morning_trend_figure(readings, changes, settings, since, until, palette=palette)),
-            ("Répartition", distribution_figure(readings, settings, palette=palette)),
-        ):
+        for title, fig in chart_figures(data, palette):
             texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(figure_png(fig, dpi=CHART_DPI)))
             picture = Gtk.Picture(paintable=texture, content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True)
             picture.set_alternative_text(title)
