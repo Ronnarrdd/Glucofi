@@ -5,7 +5,8 @@ Le formulaire est un dict de chaînes, plus quatre listes de paliers (dicts de c
 - low_tiers [{below_g_l, step_ui}], high_tiers [{above_g_l, step_ui, days}] : paliers de la dose du soir ;
 - morning_enabled ("1" ou "") puis m_low_g_l, m_high_g_l, m_step_ui, m_high_streak_days, m_low_tiers,
   m_high_tiers : dose du matin, réglée sur la glycémie du soir ;
-- morning_start, morning_end, evening_start, evening_end : plages horaires, HH:MM.
+- morning_start, morning_end, evening_start, evening_end : plages horaires, HH:MM ;
+- skip_missed_dose ("1" ou "") : écarter la glycémie de référence qui suit une dose déclarée non prise.
 Une clé absente garde la valeur de `base` (ancien formulaire, réglage non affiché).
 Les erreurs (FormError) désignent le champ fautif : "low_g_l", "m_high_tiers.1.days", ...
 """
@@ -146,6 +147,8 @@ def protocol_from_form(form: dict, base: dict | None = None) -> DosingSettings:
     for key in TIME_FIELDS:
         if key in form:
             values[key] = parse_hhmm(key, form[key])
+    if "skip_missed_dose" in form:
+        values["skip_after_missed_dose"] = str(form["skip_missed_dose"]).strip().lower() in TRUE_WORDS
     if "morning_enabled" in form:
         enabled = str(form["morning_enabled"]).strip().lower() in TRUE_WORDS
         values["morning_titration"] = (
@@ -191,6 +194,7 @@ def protocol_to_form(settings: DosingSettings | None, draft: dict | None = None)
         form |= _titration_form(settings.morning_titration, "m_")
         form["morning_enabled"] = "1" if settings.morning_titration is not None else ""
         form |= {key: fmt_hhmm(getattr(settings, key)) for key in TIME_FIELDS}
+        form["skip_missed_dose"] = "1" if settings.skip_after_missed_dose else ""
         return form
     draft = draft or {}
     defaults = DosingSettings(insulin="x", low_g_l=0.8, high_g_l=1.5, step_ui=1, high_streak_days=1)
@@ -204,6 +208,7 @@ def protocol_to_form(settings: DosingSettings | None, draft: dict | None = None)
         "high_tiers": [],
         **_titration_form(None, "m_"),
         "morning_enabled": "",
+        "skip_missed_dose": "1" if draft.get("skip_after_missed_dose") else "",
     }
     for key in TIME_FIELDS:
         value = draft.get(key) or getattr(defaults, key)
@@ -256,6 +261,12 @@ def protocol_sections(settings: DosingSettings) -> list[tuple[str, list[str]]]:
         ))
     else:
         sections.append(("Dose du matin", ["Pas d'ajustement automatique : elle ne change que si vous la modifiez."]))
+    sections.append(("Doses non prises", [
+        "Les glycémies de référence qui suivent une dose déclarée non prise sont écartées de l'ajustement "
+        "(sauf sous le seuil bas)."
+        if settings.skip_after_missed_dose
+        else "Une dose déclarée non prise n'écarte aucune glycémie de l'ajustement."
+    ]))
     sections.append(("Alertes", [
         f"Hypoglycémie sous {fmt_g_l(round(settings.hypo_alert_g_l * 100))}",
         f"Hyperglycémie au-dessus de {fmt_g_l(round(settings.hyper_alert_g_l * 100))}",
@@ -288,6 +299,7 @@ def _flatten(settings: DosingSettings) -> dict[str, str]:
             )
     if settings.morning_titration is not None:
         out["Plage du soir"] = f"{settings.evening_start:%H:%M}-{settings.evening_end:%H:%M}"
+    out["Écarter après une dose non prise"] = "oui" if settings.skip_after_missed_dose else "non"
     out["Alerte hypoglycémie"] = f"sous {fmt_g_l(round(settings.hypo_alert_g_l * 100))}"
     out["Alerte hyperglycémie"] = f"au-dessus de {fmt_g_l(round(settings.hyper_alert_g_l * 100))}"
     out["Données trop anciennes"] = f"après {settings.stale_days} jours"

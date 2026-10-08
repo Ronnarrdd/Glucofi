@@ -128,6 +128,19 @@ class ProtocolEditor:
         self._rows(window, form, (("morning_start", "Début", "HH:MM"), ("morning_end", "Fin", "HH:MM")))
         self._tier_group("", "Paliers de la dose du soir", form)
 
+        missed = self._group(
+            "Doses non prises",
+            "Dans Aujourd'hui, vous cochez chaque dose prise ou non prise. Cette option est à réserver à une consigne "
+            "de votre médecin.",
+        )
+        self.skip_switch = Adw.SwitchRow(
+            title="Écarter la glycémie qui suit une dose non prise",
+            subtitle="La glycémie du matin après une dose du soir non prise ne compte pas dans l'ajustement. "
+            "Une glycémie sous le seuil bas compte toujours.",
+            active=form.get("skip_missed_dose") == "1",
+        )
+        missed.add(self.skip_switch)
+
         self.morning = self._group(
             "Dose du matin",
             "Si le médecin ajuste aussi la dose du matin, selon la glycémie du soir (avant le dîner).",
@@ -184,6 +197,7 @@ class ProtocolEditor:
         values = {key: row.get_text() for key, row in self.rows.items()}
         values |= {key: tiers.values() for key, tiers in self.tiers.items()}
         values["morning_enabled"] = "1" if self.morning_switch.get_active() else ""
+        values["skip_missed_dose"] = "1" if self.skip_switch.get_active() else ""
         return values
 
     def read(self, base: dict):

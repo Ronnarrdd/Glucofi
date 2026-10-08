@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Sequence
 from xml.sax.saxutils import escape
@@ -34,9 +34,11 @@ from contracts import (
     DoseProposal,
     DoseTarget,
     DosingSettings,
+    Injection,
     NoteTag,
     Reading,
 )
+from services.adherence import Adherence, adherence, missed_doses
 from services.charts import PERIODS, Stats, compute_stats, period_of, stats_by_period
 from services.charts.figures import distribution_figure, figure_png, morning_trend_figure, timeline_figure
 from services.dosing import (
@@ -45,6 +47,7 @@ from services.dosing import (
     exclusion_refused,
     fmt_g_l,
     fmt_mg_dl,
+    missed_dose_behind,
     morning_readings,
     reference_target,
 )
@@ -66,7 +69,7 @@ DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 MORNING_LEGEND = (
     "Réf. : « retenue » = glycémie de référence utilisée pour l'ajustement (du matin pour la dose du soir, "
     "du soir pour la dose du matin si le médecin l'ajuste) ; « écartée » = retirée de "
-    "l'ajustement par une note du patient ; « comptée » = marquée à écarter mais sous le seuil bas, donc utilisée "
+    "l'ajustement par une note du patient, ou parce que la dose qui précède est déclarée non prise ; « comptée » = marquée à écarter mais sous le seuil bas, donc utilisée "
     "quand même (une glycémie basse n'est jamais écartée)."
 )
 
@@ -84,6 +87,8 @@ class ReportInput:
     # protocole en clair (titre, lignes) et historique (titre, changements), mis en forme par l'appelant
     protocol: Sequence[tuple[str, Sequence[str]]] = ()
     protocol_history: Sequence[tuple[str, Sequence[str]]] = ()
+    # journal des injections (doses déclarées prises ou non prises) ; vide si le journal n'a pas servi
+    injections: Sequence[Injection] = ()
 
 
 def _styles():
@@ -138,13 +143,63 @@ def _stats_rows(overall: Stats, by_period: dict[str, Stats]) -> list[list[str]]:
     return rows
 
 
-def morning_status(reading: Reading, retained: set[Reading], settings: DosingSettings) -> str:
-    """Colonne « Matin » : retenue pour l'ajustement, écartée par une note, ou comptée malgré la note (sous le seuil bas)."""
+def morning_status(reading: Reading, retained: set[Reading], settings: DosingSettings, missed: frozenset = frozenset()) -> str:
+    """Colonne « Matin » : retenue pour l'ajustement, écartée par une note ou une dose non prise, ou comptée malgré
+    la note (sous le seuil bas)."""
     if reading in retained:
         return "comptée" if exclusion_refused(reading, settings) else "retenue"
-    if excluded_from_dosing(reading, settings):
+    if excluded_from_dosing(reading, settings, missed):
         return "écartée"
     return ""
+
+
+def missed_summary(readings: Sequence[Reading], settings: DosingSettings, missed: frozenset) -> str:
+    """« 2 glycémies du matin écartées après une dose du soir non prise. » ; vide si aucune."""
+    out = []
+    for target, ref, dose in ((DoseTarget.EVENING, "matin", "soir"), (DoseTarget.MORNING, "soir", "matin")):
+        n = sum(missed_dose_behind(r, settings, missed) is not None and reference_target(r, settings) is target for r in readings)
+        if n:
+            out.append(count_fr(
+                n, f"glycémie du {ref} écartée après une dose du {dose} non prise",
+                f"glycémies du {ref} écartées après une dose du {dose} non prise",
+            ) + " de l'ajustement.")
+    return " ".join(out)
+
+
+MAX_DAYS_LISTED = 10
+
+
+def _days_text(days) -> str:
+    listed = ", ".join(f"{d:%d/%m}" for d in days[:MAX_DAYS_LISTED])
+    return listed + (f" et {len(days) - MAX_DAYS_LISTED} autres" if len(days) > MAX_DAYS_LISTED else "")
+
+
+def adherence_story(data_adherence: Adherence, st) -> list:
+    """Section « Injections » : observance par dose, jours non pris et non renseignés."""
+    story: list = [Paragraph("Injections", st["h2"])]
+    if data_adherence.declared == 0:
+        story.append(Paragraph(
+            "Journal des injections non renseigné sur cette période : aucune dose n'a été déclarée prise ou non prise.",
+            st["body"],
+        ))
+        return story
+    rows = [["Dose", "Dues", "Prises", "Non prises", "Non renseignées", "Observance"]]
+    for line in data_adherence.doses:
+        rows.append([
+            DOSE_WORDS[line.target].capitalize(), str(line.due), str(line.taken), str(line.missed), str(line.unset),
+            line.rate_text,
+        ])
+    story.append(_table(rows, [4 * cm, 2.4 * cm, 2.4 * cm, 2.8 * cm, 3.6 * cm, 2.8 * cm]))
+    for line in data_adherence.doses:
+        for days, name in ((line.missed_days, "Non prises"), (line.unset_days, "Non renseignées")):
+            if days:
+                story.append(Paragraph(f"{name}, {DOSE_WORDS[line.target]} : {_days_text(days)}.", st["small"]))
+    story.append(Paragraph(
+        "Une dose est due chaque jour de la période, avant aujourd'hui, où la dose en cours est supérieure à 0 UI. "
+        "L'observance est la part des doses dues déclarées prises ; une dose non renseignée compte comme non prise.",
+        st["small"],
+    ))
+    return story
 
 
 def notes_summary(readings: Sequence[Reading], settings: DosingSettings) -> str:
@@ -206,6 +261,10 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
             style = st["alert"] if alert.level is AlertLevel.DANGER else st["body"]
             story.append(Paragraph(f"Alerte : {escape(alert.message)}", style))
 
+    today = generated.date()
+    report_adherence = adherence(data.injections, data.changes, data.since.date(), data.until.date(), today)
+    story += adherence_story(report_adherence, st)
+
     if data.protocol:
         story.append(Paragraph("Protocole", st["h2"]))
         rows = [[Paragraph(f"<b>{escape(title)}</b>", st["small"]), Paragraph("<br/>".join(map(escape, lines)), st["small"])]
@@ -255,13 +314,14 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
     story.append(PageBreak())
     story.append(Paragraph("Détail des mesures", st["h2"]))
     if period:
-        notes = notes_summary(period, settings)
+        missed = missed_doses(data.injections)
+        notes = " ".join(part for part in (notes_summary(period, settings), missed_summary(period, settings, missed)) if part)
         if notes:
             story.append(Paragraph(escape(notes), st["body"]))
             story.append(Spacer(1, 6))
-        morning_keys = {m.reading for m in morning_readings(period, settings)}
+        morning_keys = {m.reading for m in morning_readings(period, settings, missed)}
         if settings.morning_titration is not None:
-            morning_keys |= {m.reading for m in evening_readings(period, settings)}
+            morning_keys |= {m.reading for m in evening_readings(period, settings, missed)}
         low, high = round(settings.low_g_l * 100), round(settings.high_g_l * 100)
         rows = [["Date", "Heure", "Glycémie", "mg/dL", "Moment", "Marqueur", "Réf.", "Note"]]
         extra = []
@@ -269,7 +329,7 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
             rows.append([
                 f"{DAYS_FR[r.device_time.weekday()]} {r.device_time:%d/%m/%Y}", f"{r.device_time:%H:%M}", fmt_g_l(r.mg_dl), fmt_mg_dl(r.mg_dl),
                 period_of(r, settings), MEAL_LABELS_FR[r.meal] if r.meal is not None else "",
-                morning_status(r, morning_keys, settings),
+                morning_status(r, morning_keys, settings, missed),
                 Paragraph(escape(r.note.summary), st["small"]) if r.note is not None and r.note.summary else "",
             ])
             if r.mg_dl < low:

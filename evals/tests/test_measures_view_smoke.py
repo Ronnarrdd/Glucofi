@@ -31,7 +31,7 @@ class MeasuresViewSmokeTest(unittest.TestCase):
         self.assertTrue(any(line.note for line in lines))
 
     def test_eval_catches_a_view_that_ignores_notes(self):
-        with mock.patch("app.measures.excluded_from_dosing", lambda _r, _s: False):
+        with mock.patch("app.measures.excluded_from_dosing", lambda _r, _s, _m=frozenset(): False):
             _views, failures = check("mutation", all_markers_patient(0, days=30))
         self.assertTrue(any("écartée incorrecte" in f["echec"] for f in failures))
 

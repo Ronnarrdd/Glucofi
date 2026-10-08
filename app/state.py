@@ -26,12 +26,15 @@ from contracts import (
     DoseRule,
     DoseTarget,
     DosingSettings,
+    Injection,
+    InjectionState,
     MeterInfo,
     ProtocolChange,
     Reading,
     ReadingNote,
     count_fr,
 )
+from services.adherence import missed_doses
 from services.device import FetchResult, fmt_offset, parse_file
 from services.dosing import apply_adjustment, can_exclude, fmt_g_l, propose, reference_target
 from services.store import ImportSummary, MergeSummary, Store
@@ -120,6 +123,7 @@ def merge_message(summary: MergeSummary) -> str:
             (summary.readings_added, "mesure ajoutée", "mesures ajoutées"),
             (summary.markers_added, "marqueur repas ajouté", "marqueurs repas ajoutés"),
             (summary.notes_added + summary.notes_updated, "note ajoutée", "notes ajoutées"),
+            (summary.injections_added + summary.injections_updated, "injection renseignée", "injections renseignées"),
             (summary.doses_added, "dose validée ajoutée", "doses validées ajoutées"),
             (summary.protocol_versions_added, "version du protocole ajoutée", "versions du protocole ajoutées"),
         )
@@ -214,7 +218,24 @@ class AppState:
         settings = self.settings
         if not changes or settings is None:
             return None
-        return propose(self.store.readings(), changes, settings, self._today())
+        return propose(
+            self.store.readings(), changes, settings, self._today(), self.store.injections(), self._now()
+        )
+
+    def injections(self, since: date | None = None, until: date | None = None) -> list[Injection]:
+        """Journal des injections : doses déclarées prises ou non prises (les autres sont « non renseignées »)."""
+        return self.store.injections(since, until)
+
+    def missed(self) -> frozenset:
+        """Doses déclarées non prises, au format que le moteur et les vues attendent."""
+        return missed_doses(self.store.injections())
+
+    def set_injection(self, day: date, target: DoseTarget, state: InjectionState | None) -> None:
+        """Déclare la dose `target` du jour `day` prise ou non prise ; None la remet à « non renseignée »."""
+        if day > self._today():
+            raise ValueError("une dose à venir ne peut pas être déclarée")
+        self.store.set_injection(day, target, state)
+        log.info("injection : %s du %s, %s", DOSE_NAMES[target], day, state.value if state else "non renseignée")
 
     def validate(self, shown: DoseProposal, note: str = "", target: DoseTarget = DoseTarget.EVENING) -> DoseChange:
         """Valide l'ajustement affiché d'une dose, après avoir vérifié qu'il est toujours d'actualité."""

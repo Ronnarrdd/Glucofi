@@ -114,6 +114,7 @@ class TextsTest(unittest.TestCase):
             "Insuline",
             "Dose du soir, selon la glycémie du matin (06:00-10:30)",
             "Dose du matin, selon la glycémie du soir (18:00-20:30)",
+            "Doses non prises",
             "Alertes",
         ])
         evening = dict(protocol_sections(FULL))[titles[1]]

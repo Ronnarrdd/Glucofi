@@ -2,7 +2,8 @@
 
 Chaque scénario (graine fixe) tire au hasard une suite d'opérations sur l'un ou l'autre appareil :
 lecture du lecteur (plages de mesures qui se recouvrent, marqueurs parfois absents), note posée, modifiée
-ou effacée (parfois à la même seconde sur les deux appareils), dose validée, protocole modifié, fusion
+ou effacée (parfois à la même seconde sur les deux appareils), dose déclarée prise, non prise ou remise à
+« non renseignée » (journal des injections), dose validée, protocole modifié, fusion
 (export d'un appareil, fusion dans l'autre). À la fin, deux allers-retours.
 
 Vérifié à la fin, contre un oracle tenu à côté (tout ce qui a été fait, sur les deux appareils) :
@@ -10,6 +11,7 @@ Vérifié à la fin, contre un oracle tenu à côté (tout ce qui a été fait, 
 - rien de perdu, rien en double : chaque mesure, dose validée et version du protocole une seule fois ;
 - marqueurs : une mesure porte le marqueur qu'une lecture lui a donné ;
 - notes : la dernière modification (date, puis contenu) l'emporte, effacement compris ;
+- journal des injections : la dernière déclaration (date, puis état) l'emporte, effacement compris ;
 - protocole en cours : la version la plus récente ;
 - idempotence : une fusion de plus ne change rien ;
 - le fichier fusionné n'est jamais modifié.
@@ -34,7 +36,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from contracts import DoseChange, DoseRule, DosingSettings, Meal, NoteTag, Reading, ReadingNote
+from contracts import DoseChange, DoseRule, DosingSettings, DoseTarget, InjectionState, Meal, NoteTag, Reading, ReadingNote
 from services.store import MergeSummary, Store
 from services.store.store import settings_json
 
@@ -49,6 +51,11 @@ class Oracle:
     notes: dict[tuple[str, int], tuple[str, tuple]] = field(default_factory=dict)
     doses: set[tuple] = field(default_factory=set)
     protocols: set[tuple[str, str]] = field(default_factory=set)
+    injections: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
+
+    def injection(self, key, at: str, state: str) -> None:
+        if key not in self.injections or (at, state) > self.injections[key]:
+            self.injections[key] = (at, state)
 
     def note(self, key, at: str, content: tuple) -> None:
         if key not in self.notes or (at, content) > self.notes[key]:
@@ -71,6 +78,7 @@ def content_of(store: Store) -> tuple:
         [(r.device_time, r.mg_dl, r.meal, r.note) for r in store.readings()],
         sorted((c.effective, c.morning_ui, c.evening_ui, c.rule.value, c.evidence) for c in store.dose_changes()),
         sorted((c.effective, json.dumps(settings_json(c.settings), sort_keys=True)) for c in store.protocol_changes()),
+        store.db.execute("SELECT day, target, state, updated_at FROM injections WHERE state IS NOT NULL ORDER BY day, target").fetchall(),
         store.dosing_settings(),
         store.get_setting("patient_name"),
     )
@@ -93,11 +101,13 @@ class Scenario:
         self.problems: list[str] = []
         self.ops: Counter[str] = Counter()
         self.noted_this_second: set[str] = set()
+        self.declared_this_second: set[str] = set()
 
     def tick(self, same_second: bool = False) -> datetime:
         if not same_second:
             self.clock += timedelta(minutes=self.rng.randint(1, 600))
             self.noted_this_second = set()
+            self.declared_this_second = set()
         return self.clock
 
     def close(self) -> None:
@@ -142,6 +152,20 @@ class Scenario:
         note = note or ReadingNote()
         self.oracle.note(key, at, (json.dumps([t.value for t in note.tags]), note.text, int(note.exclude_from_dosing)))
 
+    def declare_injection(self, name: str, same_second: bool) -> None:
+        store = self.devices[name]
+        day = (T0 + timedelta(days=self.rng.randint(0, 9))).date()
+        target = self.rng.choice(list(DoseTarget))
+        state = self.rng.choice((InjectionState.TAKEN, InjectionState.TAKEN, InjectionState.MISSED, None))
+        store.set_injection(day, target, state)
+        shared = same_second and bool(self.declared_this_second) and name not in self.declared_this_second
+        self.ops["injection à la même seconde que l'autre appareil"] += shared
+        at = self.tick(shared).isoformat()
+        self.declared_this_second.add(name)
+        store.db.execute("UPDATE injections SET updated_at = ? WHERE day = ? AND target = ?", (at, day.isoformat(), target.value))
+        store.db.commit()
+        self.oracle.injection((day.isoformat(), target.value), at, state.value if state is not None else "")
+
     def validate_dose(self, name: str) -> None:
         store = self.devices[name]
         current = store.current_dose()
@@ -180,10 +204,13 @@ class Scenario:
             elif roll < 0.55:
                 self.ops["note"] += 1
                 self.edit_note(name, same_second=self.rng.random() < 0.4)
-            elif roll < 0.70:
+            elif roll < 0.65:
+                self.ops["injection"] += 1
+                self.declare_injection(name, same_second=self.rng.random() < 0.4)
+            elif roll < 0.74:
                 self.ops["dose"] += 1
                 self.validate_dose(name)
-            elif roll < 0.78:
+            elif roll < 0.80:
                 self.ops["protocole"] += 1
                 self.edit_protocol(name)
             else:
@@ -216,6 +243,10 @@ class Scenario:
                 want = None if expected is None or expected[1] == ("[]", "", 0) else expected[1]
                 if got != want:
                     self.problems.append(f"{name} {key} : note {got}, attendu {want}")
+            declared = {(i.day.isoformat(), i.target.value): i.state.value for i in store.injections()}
+            wanted = {key: state for key, (_at, state) in self.oracle.injections.items() if state}
+            if declared != wanted:
+                self.problems.append(f"{name} : journal des injections {declared}, attendu {wanted}")
             doses = {(c.effective, c.morning_ui, c.evening_ui, c.rule.value, c.evidence) for c in store.dose_changes()}
             if doses != self.oracle.doses or len(store.dose_changes()) != len(self.oracle.doses):
                 self.problems.append(f"{name} : doses {len(store.dose_changes())}, attendu {len(self.oracle.doses)}")
@@ -259,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         writer = csv.writer(fh)
         writer.writerow([
             "scenario", "vers", "depuis", "mesures", "marqueurs", "notes_ajoutees", "notes_mises_a_jour",
-            "doses", "versions_protocole", "protocole_change", "alertes",
+            "injections_ajoutees", "injections_mises_a_jour", "doses", "versions_protocole", "protocole_change", "alertes",
         ])
         for seed in range(args.scenarios):
             scenario = run_scenario(seed, args.steps)
@@ -269,12 +300,13 @@ def main(argv: list[str] | None = None) -> int:
             for into, source, s in scenario.merges:
                 writer.writerow([
                     seed, into, source, s.readings_added, s.markers_added, s.notes_added, s.notes_updated,
-                    s.doses_added, s.protocol_versions_added, int(s.protocol_changed), " | ".join(s.warnings),
+                    s.injections_added, s.injections_updated, s.doses_added, s.protocol_versions_added, int(s.protocol_changed), " | ".join(s.warnings),
                 ])
                 totals["fusions"] += 1
                 totals["mesures"] += s.readings_added
                 totals["marqueurs"] += s.markers_added
                 totals["notes"] += s.notes_added + s.notes_updated
+                totals["injections"] += s.injections_added + s.injections_updated
                 totals["doses"] += s.doses_added
                 totals["versions"] += s.protocol_versions_added
                 warned += bool(s.warnings)
@@ -286,7 +318,8 @@ def main(argv: list[str] | None = None) -> int:
     print("| Ramené par les fusions | Total |")
     print("| --- | --- |")
     for label, key in (("fusions", "fusions"), ("mesures", "mesures"), ("marqueurs complétés", "marqueurs"),
-                       ("notes ajoutées ou mises à jour", "notes"), ("doses validées", "doses"),
+                       ("notes ajoutées ou mises à jour", "notes"),
+                       ("injections ajoutées ou mises à jour", "injections"), ("doses validées", "doses"),
                        ("versions du protocole", "versions")):
         print(f"| {label} | {totals[key]} |")
     print(f"| fusions avec alerte (modifié des deux côtés) | {warned} |")

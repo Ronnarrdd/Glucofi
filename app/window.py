@@ -418,6 +418,7 @@ class MainWindow(Adw.ApplicationWindow):
             until=until,
             patient_name=self.state.patient_name,
             proposal=self.state.proposal(),
+            injections=self.state.injections(),
             protocol=protocol_sections(self.state.settings),
             protocol_history=[
                 (f"{change.effective:%d/%m/%Y %H:%M}" + (f" · {change.note}" if change.note else ""), lines)

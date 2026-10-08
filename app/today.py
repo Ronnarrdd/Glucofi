@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from app.injections import InjectionsView, injections_view
 from app.measures import MONTHS_FR, WEEKDAYS_FR, Marker, marker_of
 from app.protocol import DOSE_NAMES, evening_rule_text, morning_rule_text
 from app.state import AppState, clock_text, meter_text
@@ -76,13 +77,17 @@ class ReadingItem:
     note: str | None
     excluded: bool = False
     evidence: bool = False
+    # motif tiré du journal des injections (« dose du soir du 05/10 non prise ») quand c'est lui qui écarte la mesure
+    excluded_why: str = ""
 
     @property
     def chip_text(self) -> str:
         return f"{self.day} {self.g_l}"
 
 
-def reading_item(reading: Reading, titration: Titration | None, excluded: bool = False, evidence: bool = False) -> ReadingItem:
+def reading_item(
+    reading: Reading, titration: Titration | None, excluded: bool = False, evidence: bool = False, excluded_why: str = ""
+) -> ReadingItem:
     value = level(reading, titration)
     return ReadingItem(
         reading=reading,
@@ -95,6 +100,7 @@ def reading_item(reading: Reading, titration: Titration | None, excluded: bool =
         note=(reading.note.summary or None) if reading.note is not None else None,
         excluded=excluded,
         evidence=evidence,
+        excluded_why=excluded_why,
     )
 
 
@@ -117,6 +123,7 @@ def adjustment_view(state: AppState, adjustment: DoseAdjustment) -> AdjustmentVi
     titration = settings.titration(target)
     shown = sorted([(m.reading, False) for m in adjustment.references] + [(r, True) for r in adjustment.excluded])
     evidence = {(r.device_time, r.mg_dl) for r in adjustment.evidence}
+    why = {(r.device_time, r.mg_dl): w for r, w in zip(adjustment.excluded, adjustment.excluded_why)}
     dose = DOSE_NAMES[target]
     rule_text = morning_rule_text if target is DoseTarget.EVENING else evening_rule_text
     return AdjustmentView(
@@ -126,7 +133,10 @@ def adjustment_view(state: AppState, adjustment: DoseAdjustment) -> AdjustmentVi
         references_title=f"Glycémies du {ref} depuis le {adjustment.since:%d/%m/%Y}",
         references_rule=rule_text(settings),
         references=tuple(
-            reading_item(reading, titration, excluded, (reading.device_time, reading.mg_dl) in evidence)
+            reading_item(
+                reading, titration, excluded, (reading.device_time, reading.mg_dl) in evidence,
+                why.get((reading.device_time, reading.mg_dl), ""),
+            )
             for reading, excluded in reversed(shown[-REFERENCES_SHOWN:])
         ),
         confirm_title=f"Passer la {dose} de {adjustment.current_ui} à {adjustment.proposed_ui} UI ?",
@@ -229,6 +239,7 @@ class TodayView:
     readings: int
     meter_rows: tuple[tuple[str, str], ...]
     proposal: DoseProposal | None
+    injections: InjectionsView | None = None
 
     @property
     def footer(self) -> str | None:
@@ -300,4 +311,5 @@ def today_view(state: AppState) -> TodayView:
         readings=len(readings),
         meter_rows=meter_rows(state),
         proposal=proposal,
+        injections=injections_view(state),
     )

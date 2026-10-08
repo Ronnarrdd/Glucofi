@@ -9,7 +9,7 @@ import re
 import sqlite3
 import tempfile
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Iterable
 
@@ -19,7 +19,10 @@ from contracts import (
     ClockAction,
     DoseChange,
     DoseRule,
+    DoseTarget,
     DosingSettings,
+    Injection,
+    InjectionState,
     Meal,
     MeterClock,
     MeterInfo,
@@ -33,7 +36,7 @@ from contracts import (
 
 log = logging.getLogger("glucofi.store")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SQLITE_HEADER = b"SQLite format 3\x00"
 TIME_FIELDS = ("morning_start", "morning_end", "evening_start", "evening_end")
 # sauvegardes « avant-fusion » gardées : une par fusion qui a changé quelque chose
@@ -110,6 +113,13 @@ CREATE TABLE IF NOT EXISTS protocol_changes (
     settings TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS injections (
+    day TEXT NOT NULL,
+    target TEXT NOT NULL CHECK (target IN ('morning', 'evening')),
+    state TEXT CHECK (state IS NULL OR state IN ('taken', 'missed')),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (day, target)
 );
 """
 
@@ -255,11 +265,14 @@ class MergeSummary:
     patient_name_taken: bool
     warnings: tuple[str, ...]
     backup: Path | None
+    injections_added: int = 0
+    injections_updated: int = 0
 
     @property
     def changed(self) -> bool:
         return bool(
             self.readings_added or self.markers_added or self.notes_added or self.notes_updated
+            or self.injections_added or self.injections_updated
             or self.doses_added or self.protocol_versions_added or self.imports_added or self.patient_name_taken
         )
 
@@ -315,7 +328,9 @@ class Store:
                 self.migrations.append(self._migrate_to_v3(backup))
             if version < 4:
                 self.migrations.append(self._migrate_to_v4(backup))
-            self.migrations.append(self._migrate_to_v5(backup))
+            if version < 5:
+                self.migrations.append(self._migrate_to_v5(backup))
+            self.migrations.append(self._migrate_to_v6(backup))
 
     @property
     def last_migration(self) -> "Migration | None":
@@ -416,6 +431,18 @@ class Store:
             after = self._count()
         log.info("base migrée v4 -> v5 : historique du protocole %s, sauvegarde %s", "amorcé" if seeded else "vide", backup)
         return Migration(4, 5, before, after, 0, backup)
+
+    def _migrate_to_v6(self, backup: Path | None) -> "Migration":
+        """v5 -> v6 : journal des injections (table injections, créée par SCHEMA), vide au départ.
+
+        Aucune ligne modifiée : les jours d'avant le journal restent « non renseignés ».
+        """
+        with self.db:
+            before = self._count()
+            self.db.execute("UPDATE settings SET value = '6' WHERE key = 'schema_version'")
+            after = self._count()
+        log.info("base migrée v5 -> v6 : journal des injections, sauvegarde %s", backup)
+        return Migration(5, 6, before, after, 0, backup)
 
     def _add_columns(self, tables: dict[str, tuple[str, ...]]) -> None:
         for table, columns in tables.items():
@@ -585,6 +612,43 @@ class Store:
             not _is_erased(*row) for row in self.db.execute("SELECT tags, text, exclude_from_dosing FROM reading_notes")
         )
 
+    # Journal des injections
+
+    def set_injection(self, day: date, target: DoseTarget, state: InjectionState | None) -> None:
+        """Dose `target` du jour `day` : prise, non prise, ou None pour revenir à « non renseignée ».
+
+        Effacer garde une ligne vide, datée, pour que la fusion avec un autre appareil propage l'effacement
+        (comme pour les notes).
+        """
+        with self.db:
+            self.db.execute(
+                "INSERT INTO injections (day, target, state, updated_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT (day, target) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+                (
+                    day.isoformat(), DoseTarget(target).value, state.value if state is not None else None,
+                    datetime.now().replace(microsecond=0).isoformat(),
+                ),
+            )
+
+    def injections(self, since: date | None = None, until: date | None = None) -> list[Injection]:
+        """Injections renseignées, du `since` (inclus) au `until` (exclu), dans l'ordre des jours."""
+        query = "SELECT day, target, state FROM injections WHERE state IS NOT NULL"
+        args: list[str] = []
+        if since is not None:
+            query += " AND day >= ?"
+            args.append(since.isoformat())
+        if until is not None:
+            query += " AND day < ?"
+            args.append(until.isoformat())
+        query += " ORDER BY day, target"
+        return [
+            Injection(date.fromisoformat(day), DoseTarget(target), InjectionState(state))
+            for day, target, state in self.db.execute(query, args)
+        ]
+
+    def count_injections(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM injections WHERE state IS NOT NULL").fetchone()[0]
+
     def last_import(self) -> ImportSummary | None:
         row = self.db.execute(
             "SELECT source, received, added, rejected, at, markers_added, meter_serial, clock_offset_s, clock_action,"
@@ -722,8 +786,8 @@ class Store:
     def merge_from(self, source: Path | str) -> MergeSummary:
         """Ajoute à cette base ce que la base `source` (autre appareil) a en plus ; `source` n'est jamais modifiée.
 
-        Mesures, marqueurs, lecteurs, journal des lectures : réunis sans doublon. Notes : la plus récemment
-        modifiée l'emporte. Doses validées et versions du protocole : réunies par date ; la version la plus
+        Mesures, marqueurs, lecteurs, journal des lectures : réunis sans doublon. Notes et journal des injections : la plus
+        récemment modifiée l'emporte. Doses validées et versions du protocole : réunies par date ; la version la plus
         récente du protocole devient le protocole en cours. Le nom du patient n'est repris que s'il manque.
         Une copie de cette base est faite avant : glucofi.db.avant-fusion-AAAAMMJJ-HHMMSS.bak, effacée si la fusion
         n'a rien changé ; seules les MERGE_BACKUPS_KEPT plus récentes sont gardées (synchronisation fréquente).
@@ -754,10 +818,10 @@ class Store:
             summary = replace(summary, backup=None)
         self._prune_backups("avant-fusion", MERGE_BACKUPS_KEPT)
         log.info(
-            "fusion de %s : %s mesures, %s marqueurs, %s notes ajoutées et %s mises à jour, %s doses, "
-            "%s versions du protocole (protocole en cours %s), %s alertes, sauvegarde %s",
+            "fusion de %s : %s mesures, %s marqueurs, %s notes ajoutées et %s mises à jour, %s injections ajoutées "
+            "et %s mises à jour, %s doses, %s versions du protocole (protocole en cours %s), %s alertes, sauvegarde %s",
             summary.source, summary.readings_added, summary.markers_added, summary.notes_added, summary.notes_updated,
-            summary.doses_added, summary.protocol_versions_added, "changé" if summary.protocol_changed else "inchangé",
+            summary.injections_added, summary.injections_updated, summary.doses_added, summary.protocol_versions_added, "changé" if summary.protocol_changed else "inchangé",
             len(summary.warnings), summary.backup,
         )
         return summary
@@ -850,6 +914,26 @@ class Store:
                 else:
                     notes_updated += 1
 
+            injections_added = injections_updated = 0
+            for row in other.db.execute("SELECT day, target, state, updated_at FROM injections").fetchall():
+                mine = self.db.execute(
+                    "SELECT updated_at, state FROM injections WHERE day = ? AND target = ?", row[:2]
+                ).fetchone()
+                # même seconde sur les deux appareils : départage fixe (« missed » avant « taken », vide en dernier)
+                if mine is not None and (mine[0], mine[1] or "") >= (row[3], row[2] or ""):
+                    continue
+                if mine is None and row[2] is None:
+                    continue
+                self.db.execute(
+                    "INSERT INTO injections (day, target, state, updated_at) VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT (day, target) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+                    row,
+                )
+                if mine is None:
+                    injections_added += 1
+                else:
+                    injections_updated += 1
+
             columns = "effective, morning_ui, evening_ui, rule, evidence, note, created_at, excluded"
             mine_doses = {tuple(r) for r in self.db.execute("SELECT effective, morning_ui, evening_ui, rule FROM dose_changes")}
             theirs = other.db.execute(f"SELECT {columns} FROM dose_changes ORDER BY effective, id").fetchall()
@@ -914,4 +998,5 @@ class Store:
         return MergeSummary(
             name, readings_added, markers_added, notes_added, notes_updated, len(new_doses), len(new_versions),
             protocol_changed, len(new_imports), patient_name_taken, tuple(warnings), backup,
+            injections_added, injections_updated,
         )

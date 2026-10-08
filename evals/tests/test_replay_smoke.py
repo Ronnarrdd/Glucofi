@@ -1,9 +1,21 @@
 import unittest
 
+from dataclasses import replace
 from unittest import mock
 
-from contracts import LowTier, Titration
-from evals.replay_history import FULL, changed_mornings, decisions_changed, evening_variety, replay, synthetic_patient, with_notes
+from contracts import DoseTarget, LowTier, Titration
+from evals.replay_history import (
+    FULL,
+    FULL_SKIPPING,
+    SKIPPING,
+    changed_mornings,
+    decisions_changed,
+    evening_variety,
+    replay,
+    synthetic_journal,
+    synthetic_patient,
+    with_notes,
+)
 
 
 def full_failures(seeds=range(8)) -> tuple[list, list[str]]:
@@ -76,6 +88,64 @@ class ReplaySmokeTest(unittest.TestCase):
         with mock.patch.object(Titration, "all_low_tiers", base_only):
             _, failures = full_failures()
         self.assertTrue(any("decrease" in f for f in failures))
+
+
+def journal_run(seeds=range(8), full=False):
+    """(lignes avec journal, échecs, lignes du même patient sans le réglage)."""
+    rows, failures, plain_rows = [], [], []
+    for seed in seeds:
+        base = synthetic_patient(seed, days=45)
+        patient = evening_variety(base, seed) if full else base
+        journal = synthetic_journal(patient, seed)
+        skipping = FULL_SKIPPING if full else SKIPPING
+        r, f = replay(f"j{seed}", patient, settings=skipping, journal=journal)
+        rows += r
+        failures += f
+        plain_rows += replay(f"p{seed}", patient, settings=FULL if full else replace(skipping, skip_after_missed_dose=False))[0]
+    return rows, failures, plain_rows
+
+
+class JournalReplaySmokeTest(unittest.TestCase):
+    """Journal des injections : l'oracle relit la règle (dose du soir de la veille, jamais sous le seuil bas)."""
+
+    def test_engine_matches_oracle_with_a_journal(self):
+        rows, failures, plain = journal_run()
+        self.assertEqual(failures, [])
+        self.assertGreater(decisions_changed(plain, rows), 0, "le journal ne change aucune décision : eval sans effet")
+
+    def test_full_protocol_with_a_journal_matches_oracle(self):
+        rows, failures, _ = journal_run(full=True)
+        self.assertEqual(failures, [])
+        self.assertTrue(rows)
+
+    def test_oracle_catches_an_engine_that_ignores_the_journal(self):
+        with mock.patch("services.dosing.engine.missed_dose_behind", lambda *_a, **_k: None):
+            _, failures, _ = journal_run()
+        self.assertTrue(failures)
+
+    def test_oracle_catches_an_engine_that_treats_unset_as_missed(self):
+        real = __import__("services.adherence", fromlist=["missed_doses"]).missed_doses
+
+        def lenient(injections):
+            injections = list(injections)
+            declared = {(i.day, i.target) for i in injections}
+            days = {d for d, _t in declared}
+            extra = {(d, t) for d in days for t in (DoseTarget.EVENING, DoseTarget.MORNING)} - declared
+            return real(injections) | frozenset(extra)
+
+        with mock.patch("services.dosing.engine.missed_doses", lenient):
+            _, failures, _ = journal_run()
+        self.assertTrue(failures)
+
+    def test_oracle_catches_low_readings_set_aside_after_a_missed_dose(self):
+        with mock.patch("services.dosing.engine.can_exclude", lambda _r, _s: True):
+            _, failures, _ = journal_run()
+        self.assertTrue(any("glycémie basse écartée" in f for f in failures))
+
+    def test_oracle_catches_the_wrong_day(self):
+        with mock.patch("services.dosing.engine.dose_before", lambda day, target: (day, target)):
+            _, failures, _ = journal_run()
+        self.assertTrue(failures)
 
 
 if __name__ == "__main__":

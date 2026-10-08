@@ -34,6 +34,38 @@ class StoreMergeSmokeTest(unittest.TestCase):
             problems = [p for seed in range(6) for p in run_scenario(seed, 50).problems]
         self.assertTrue(any("note" in p for p in problems))
 
+    def test_injection_tie_break_is_exercised(self):
+        ties = sum(run_scenario(seed, 60).ops["injection à la même seconde que l'autre appareil"] for seed in range(6))
+        self.assertGreater(ties, 0)
+
+    def test_eval_catches_a_journal_that_is_not_merged(self):
+        """Mutation : la fusion oublie le journal des injections."""
+        from services.store import store as store_module
+
+        original = store_module.Store._merge
+
+        def forgetful(self, other, name, backup):
+            other.db.execute("DELETE FROM injections")
+            return original(self, other, name, backup)
+
+        with mock.patch.object(store_module.Store, "_merge", forgetful):
+            problems = [p for seed in range(6) for p in run_scenario(seed, 50).problems]
+        self.assertTrue(any("injections" in p or "convergé" in p for p in problems))
+
+    def test_eval_catches_an_erased_declaration_that_comes_back(self):
+        """Mutation : l'effacement ne se propage pas (la ligne vide est ignorée à la fusion)."""
+        from services.store import store as store_module
+
+        original = store_module.Store._merge
+
+        def keeps_old(self, other, name, backup):
+            other.db.execute("DELETE FROM injections WHERE state IS NULL")
+            return original(self, other, name, backup)
+
+        with mock.patch.object(store_module.Store, "_merge", keeps_old):
+            problems = [p for seed in range(6) for p in run_scenario(seed, 60).problems]
+        self.assertTrue(problems)
+
 
 if __name__ == "__main__":
     unittest.main()

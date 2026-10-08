@@ -24,6 +24,13 @@ est ignorée, sauf sous le seuil bas. Invariants en plus : aucune preuve
 écartée, aucune glycémie basse écartée, mesures écartées enregistrées avec la
 dose validée. Affiche le nombre de décisions changées par les notes.
 
+Journal des injections : chaque patient synthétique est aussi rejoué avec un journal tiré au hasard (doses du matin
+et du soir prises, non prises ou non renseignées) et le protocole qui écarte la glycémie suivant une dose non prise
+(skip_after_missed_dose). L'oracle relit la règle : le matin d'un jour suit la dose du soir de la veille, le soir d'un
+jour suit la dose du matin du même jour ; seule une dose déclarée non prise écarte, jamais une dose non renseignée,
+jamais sous le seuil bas. Invariants en plus : aucune preuve écartée par une dose non prise, mesures écartées
+enregistrées avec la dose validée. Affiche le nombre de décisions changées par le journal.
+
 Sources : un export accuchek réel (--json) et/ou N patients synthétiques
 générés avec une graine fixe (--synthetic). Seuil de réussite : 100 %.
 
@@ -55,18 +62,19 @@ from contracts import (
     Titration,
 )
 from services.device import parse_file
+from contracts import Injection, InjectionState
 from services.dosing import apply_adjustment, fmt_reading, propose
 
 OUT_DIR = Path("/tmp/glucofi-eval")
 EVENING = time(20, 0)
 SETTINGS = DosingSettings(insulin="Insuline test", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3)
+SKIPPING = replace(SETTINGS, skip_after_missed_dose=True)
 FULL = replace(
     SETTINGS,
     low_tiers=(LowTier(0.60, 4),),
     high_tiers=(HighTier(2.20, 4, 2),),
     morning_titration=Titration(0.90, 1.60, 1, 2, (LowTier(0.70, 2),), (HighTier(2.40, 3, 1),)),
 )
-
 
 @dataclass
 class DayRow:
@@ -79,6 +87,9 @@ class DayRow:
     engine_rule: str
     oracle_rule: str
     reason: str
+
+
+FULL_SKIPPING = replace(FULL, skip_after_missed_dose=True)
 
 
 def _minutes(t: time) -> int:
@@ -108,10 +119,26 @@ def oracle_rule_text(s: DosingSettings, target: DoseTarget) -> dict:
     }
 
 
-def oracle_set_aside(rd: Reading, s: DosingSettings, low_mg: int | None = None) -> bool:
-    """Texte de la règle : marquée « écarter de l'ajustement » et pas sous le seuil bas."""
+Journal = dict[tuple[date, str], str]
+
+
+def oracle_set_aside(
+    rd: Reading, s: DosingSettings, low_mg: int | None = None, missed: frozenset = frozenset(),
+    target: DoseTarget = DoseTarget.EVENING,
+) -> bool:
+    """Texte de la règle : jamais sous le seuil bas ; sinon marquée « écarter de l'ajustement », ou, si le protocole le
+    demande, précédée d'une dose déclarée non prise (la dose du soir de la veille pour la glycémie du matin, la dose du
+    matin du même jour pour la glycémie du soir)."""
     low_mg = round(s.low_g_l * 100) if low_mg is None else low_mg
-    return rd.note is not None and rd.note.exclude_from_dosing and rd.mg_dl >= low_mg
+    if rd.mg_dl < low_mg:
+        return False
+    if rd.note is not None and rd.note.exclude_from_dosing:
+        return True
+    if not s.skip_after_missed_dose:
+        return False
+    day = rd.device_time.date()
+    before = (day - timedelta(days=1), "evening") if target is DoseTarget.EVENING else (day, "morning")
+    return before in missed
 
 
 def oracle_candidate(rd: Reading, s: DosingSettings, target: DoseTarget = DoseTarget.EVENING) -> bool:
@@ -125,12 +152,14 @@ def oracle_in_morning(rd: Reading, s: DosingSettings) -> bool:
     return oracle_candidate(rd, s, DoseTarget.EVENING)
 
 
-def oracle_references(readings: list[Reading], s: DosingSettings, target: DoseTarget) -> dict[date, Reading]:
+def oracle_references(
+    readings: list[Reading], s: DosingSettings, target: DoseTarget, missed: frozenset = frozenset()
+) -> dict[date, Reading]:
     rule = oracle_rule_text(s, target)
     lo, hi = rule["window"]
     in_window = [
         rd for rd in sorted(readings, key=lambda x: x.device_time)
-        if lo <= _minutes(rd.device_time.time()) <= hi and not oracle_set_aside(rd, s, rule["low"])
+        if lo <= _minutes(rd.device_time.time()) <= hi and not oracle_set_aside(rd, s, rule["low"], missed, target)
     ]
     out: dict[date, Reading] = {}
     for markers in (rule["first"], rule["then"]):
@@ -162,10 +191,13 @@ def oracle_since(changes: list[DoseChange], target: DoseTarget) -> datetime:
     return since
 
 
-def oracle(readings: list[Reading], since: datetime, today: date, s: DosingSettings, target: DoseTarget) -> tuple[str, int]:
+def oracle(
+    readings: list[Reading], since: datetime, today: date, s: DosingSettings, target: DoseTarget,
+    missed: frozenset = frozenset(),
+) -> tuple[str, int]:
     """(décision, pas en UI) relus littéralement du protocole, sans réutiliser le code du moteur."""
     rule = oracle_rule_text(s, target)
-    refs = {d: rd for d, rd in oracle_references(readings, s, target).items() if rd.device_time > since}
+    refs = {d: rd for d, rd in oracle_references(readings, s, target, missed).items() if rd.device_time > since}
     if not refs:
         return "keep", 0
     last = max(refs)
@@ -196,6 +228,7 @@ DOSE_ATTR = {DoseTarget.EVENING: "evening_ui", DoseTarget.MORNING: "morning_ui"}
 
 def replay(
     source: str, readings: list[Reading], start_evening: int = 4, settings: DosingSettings = SETTINGS, start_morning: int = 8,
+    journal: Journal | None = None,
 ) -> tuple[list[DayRow], list[str]]:
     readings = sorted(readings)
     if not readings:
@@ -212,12 +245,15 @@ def replay(
         while index < len(readings) and readings[index].device_time <= cutoff:
             index += 1
         visible = readings[:index]
+        declared = {key: state for key, state in (journal or {}).items() if key[0] <= day}
+        missed = frozenset(key for key, state in declared.items() if state == "missed")
+        injections = [Injection(d, DoseTarget(t), InjectionState(state)) for (d, t), state in declared.items()]
         for target in targets:
             attr = DOSE_ATTR[target]
-            proposal = propose(visible, changes, settings, day)
+            proposal = propose(visible, changes, settings, day, injections)
             adjustment = proposal.adjustment(target)
             since = oracle_since(changes, target)
-            expected, step = oracle(visible, since, day, settings, target)
+            expected, step = oracle(visible, since, day, settings, target, missed)
             before = getattr(changes[-1], attr)
             # À 0 UI, le moteur garde la dose : l'oracle dit "decrease" mais sans effet possible.
             if expected == "decrease" and before == 0:
@@ -235,7 +271,7 @@ def replay(
             )
             if adjustment.changes_dose:
                 change = apply_adjustment(proposal, target, cutoff)
-                failures.extend(check_change(source, day, change, changes[-1], since, visible, settings, target))
+                failures.extend(check_change(source, day, change, changes[-1], since, visible, settings, target, missed))
                 changes.append(change)
             reference = next((m.reading.mg_dl for m in adjustment.references if m.day == day), None)
             rows.append(DayRow(
@@ -256,7 +292,7 @@ def replay(
 
 def check_change(
     source: str, day: date, change: DoseChange, previous: DoseChange, since: datetime, visible: list[Reading],
-    settings: DosingSettings = SETTINGS, target: DoseTarget = DoseTarget.EVENING,
+    settings: DosingSettings = SETTINGS, target: DoseTarget = DoseTarget.EVENING, missed: frozenset = frozenset(),
 ) -> list[str]:
     rule = oracle_rule_text(settings, target)
     attr, other = DOSE_ATTR[target], DOSE_ATTR[DoseTarget.MORNING if target is DoseTarget.EVENING else DoseTarget.EVENING]
@@ -273,7 +309,7 @@ def check_change(
         errors.append(f"{source} {day} : baisse de {delta} UI hors paliers")
     set_aside = [
         r for r in sorted(visible)
-        if r.device_time > since and oracle_candidate(r, settings, target) and oracle_set_aside(r, settings, rule["low"])
+        if r.device_time > since and oracle_candidate(r, settings, target) and oracle_set_aside(r, settings, rule["low"], missed, target)
     ]
     if len(change.excluded) != len(set_aside) or not all(
         e.startswith(fmt_reading(r)) for e, r in zip(change.excluded, set_aside)
@@ -284,8 +320,8 @@ def check_change(
     if None in evidence or not evidence:
         errors.append(f"{source} {day} : preuves introuvables {change.evidence}")
         return errors
-    if any(oracle_set_aside(r, settings, rule["low"]) for r in evidence):
-        errors.append(f"{source} {day} : preuve écartée par une note {change.evidence}")
+    if any(oracle_set_aside(r, settings, rule["low"], missed, target) for r in evidence):
+        errors.append(f"{source} {day} : preuve écartée par une note ou une dose non prise {change.evidence}")
     if any(r.device_time <= since for r in evidence):
         errors.append(f"{source} {day} : preuve antérieure au dernier changement de la dose")
     if increase:
@@ -372,6 +408,20 @@ def with_notes(readings: list[Reading], seed: int, rate: float = 0.25) -> list[R
     return out
 
 
+def synthetic_journal(readings: list[Reading], seed: int) -> Journal:
+    """Journal tiré au hasard sur les jours du patient : chaque dose est prise (75 %), non prise (13 %) ou non renseignée."""
+    rng = random.Random(seed * 15485863 + 7)
+    journal: Journal = {}
+    for day in sorted({r.day for r in readings} | {r.day - timedelta(days=1) for r in readings}):
+        for dose in ("morning", "evening"):
+            roll = rng.random()
+            if roll < 0.75:
+                journal[(day, dose)] = "taken"
+            elif roll < 0.88:
+                journal[(day, dose)] = "missed"
+    return journal
+
+
 def decisions_changed(plain: list[DayRow], noted: list[DayRow]) -> int:
     """Jours où les notes changent la décision du moteur (même patient, même jour)."""
     return sum(a.engine_rule != b.engine_rule for a, b in zip(plain, noted))
@@ -395,8 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
     changed: dict[str, int] = {}
 
-    def run(source: str, readings: list[Reading], settings: DosingSettings = SETTINGS) -> list[DayRow]:
-        rows, errs = replay(source, readings, settings=settings)
+    def run(source: str, readings: list[Reading], settings: DosingSettings = SETTINGS, journal: Journal | None = None) -> list[DayRow]:
+        rows, errs = replay(source, readings, settings=settings, journal=journal)
         all_rows.extend(rows)
         failures.extend(errs)
         return rows
@@ -408,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         changed[path.name] = changed_mornings(readings)
     synthetic_changed = 0
     notes_changed = notes_days = set_aside = kept_low = 0
+    journal_changed = journal_days = journal_set_aside = 0
     for seed in range(args.synthetic):
         readings = synthetic_patient(seed)
         rows = run(f"synthetique-{seed}", readings)
@@ -422,6 +473,16 @@ def main(argv: list[str] | None = None) -> int:
         varied = evening_variety(readings, seed)
         run(f"complet-{seed}", varied, FULL)
         run(f"complet-notes-{seed}", with_notes(varied, seed), FULL)
+        journal = synthetic_journal(varied, seed)
+        journal_rows = run(f"journal-{seed}", readings, SKIPPING, journal)
+        journal_changed += decisions_changed(rows, journal_rows)
+        journal_days += len(journal_rows)
+        run(f"journal-complet-{seed}", with_notes(varied, seed), FULL_SKIPPING, journal)
+        journal_set_aside += sum(
+            oracle_set_aside(r, SKIPPING, None, frozenset(k for k, v in journal.items() if v == "missed"))
+            and not oracle_set_aside(r, SETTINGS, None)
+            for r in readings if oracle_in_morning(r, SETTINGS)
+        )
 
     args.out.mkdir(parents=True, exist_ok=True)
     csv_path = args.out / f"replay-{datetime.now():%Y%m%d-%H%M%S}.csv"
@@ -450,6 +511,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"notes : {set_aside} glycémie(s) du matin écartée(s), {kept_low} glycémie(s) basse(s) marquée(s) à écarter "
         f"et comptée(s), {notes_changed} décision(s) changée(s) sur {notes_days} jours"
+    )
+    print(
+        f"journal des injections : {journal_set_aside} glycémie(s) du matin possible(s) écartée(s) par une dose du soir non prise, "
+        f"{journal_changed} décision(s) changée(s) sur {journal_days} jours"
     )
     for name, n in changed.items():
         print(f"{name} : {n} glycémie(s) du matin changée(s) par les marqueurs")

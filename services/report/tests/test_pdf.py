@@ -196,3 +196,63 @@ class NotesSummaryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_DEPS, "matplotlib ou reportlab absent")
+class InjectionsInTheReportTest(unittest.TestCase):
+    """Observance et glycémies écartées après une dose non prise, dans le texte du rapport."""
+
+    SETTINGS = DosingSettings(
+        insulin="Insuline test", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3, skip_after_missed_dose=True
+    )
+
+    def text(self, injections, generated=datetime(2026, 9, 11, 9, 0), readings=()):
+        from services.report.pdf import ReportInput, build_report
+
+        changes = [DoseChange(datetime(2026, 9, 1, 12), 10, 6, DoseRule.START)]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = build_report(
+                ReportInput(
+                    list(readings), changes, self.SETTINGS, datetime(2026, 9, 1), datetime(2026, 9, 11), "Jean",
+                    injections=injections, generated_at=generated,
+                ),
+                Path(tmp) / "rapport.pdf",
+                dpi=40,
+            )
+            if shutil.which("pdftotext") is None:
+                self.skipTest("pdftotext absent : texte du rapport non vérifié")
+            raw = subprocess.run(["pdftotext", str(out), "-"], capture_output=True, text=True, check=True).stdout
+        return " ".join(raw.split())
+
+    def test_unused_journal_says_so_instead_of_a_zero_rate(self):
+        flat = self.text([])
+        self.assertIn("Journal des injections non renseigné sur cette période", flat)
+        self.assertNotIn("Observance", flat)
+
+    def test_adherence_table_and_days(self):
+        from contracts import DoseTarget, Injection, InjectionState
+
+        journal = [Injection(date(2026, 9, d), DoseTarget.EVENING, InjectionState.TAKEN) for d in (1, 2, 3, 4, 5, 6, 7)]
+        journal += [Injection(date(2026, 9, 8), DoseTarget.EVENING, InjectionState.MISSED)]
+        journal += [Injection(date(2026, 9, 1), DoseTarget.MORNING, InjectionState.TAKEN)]
+        flat = self.text(journal)
+        # dues : 1er au 10 septembre = 10 jours par dose (le 11, jour du rapport, n'est pas compté)
+        for shown in (
+            "Injections", "Observance", "Dose du soir 10 7 1 2 70 %", "Dose du matin 10 1 0 9 10 %",
+            "Non prises, dose du soir : 08/09.", "Non renseignées, dose du soir : 09/09, 10/09.",
+            "une dose non renseignée compte comme non prise",
+        ):
+            self.assertIn(shown, flat)
+
+    def test_readings_set_aside_after_a_missed_dose_are_counted_and_marked(self):
+        from contracts import DoseTarget, Injection, InjectionState
+
+        readings = []
+        for day, mg in ((2, 190), (3, 185), (4, 120)):
+            t = datetime(2026, 9, day, 8)
+            readings.append(Reading(t, mg, int(t.timestamp())))
+        journal = [Injection(date(2026, 9, 2), DoseTarget.EVENING, InjectionState.MISSED)]
+        flat = self.text(journal, readings=readings)
+        self.assertIn("1 glycémie du matin écartée après une dose du soir non prise de l'ajustement.", flat)
+        self.assertIn("écartée", flat)
+        self.assertIn("ou parce que la dose qui précède est déclarée non prise", flat)

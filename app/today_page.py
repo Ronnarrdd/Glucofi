@@ -1,7 +1,7 @@
 """Onglet Aujourd'hui, composé comme sur la tablette (TodayScreen.kt).
 
 De haut en bas : bannière « Bonjour » du renard avec « Récupérer les mesures » et la pastille du lecteur, bandeaux de
-lecture, alertes urgentes, tuiles Matin et Soir avec la colonne « Pourquoi ? », « Dernière mesure », informations,
+lecture, alertes urgentes, tuiles Matin et Soir avec la colonne « Pourquoi ? », « Injections » (prise ou non prise, quatre jours), « Dernière mesure », informations,
 puis « Glucofi propose, vous validez. ». Le détail des règles, des glycémies de référence et du lecteur passe dans
 le dialogue « Voir le détail ». Les textes viennent de app/today.py.
 """
@@ -30,9 +30,10 @@ from app.components import (
     label,
 )
 from app.dialogs import note_dialog
+from app.injections import CHOICES, INTRO, TITLE, InjectionCell, InjectionsView
 from app.state import AppState, StaleProposal
 from app.today import DISCLAIMER, TAGLINE, AdjustmentView, DoseCard, TodayView, chips, delta, today_view
-from contracts import DoseTarget
+from contracts import DoseTarget, InjectionState
 from services import device
 
 WHY_BESIDE = 840
@@ -136,7 +137,8 @@ def _reference_row(item, on_note: Callable) -> Gtk.Widget:
     texts.append(label(f"{item.day} · {item.hour}", "body-large", "muted" if item.excluded else "ink", xalign=0))
     texts.append(label(item.marker.label, "body-medium", "muted", xalign=0, wrap=True))
     if item.excluded:
-        texts.append(label(f"Écartée de l'ajustement : {item.note or ''}".rstrip(" :"), "body-medium", "muted", xalign=0, wrap=True))
+        reason = " · ".join(part for part in (item.note, item.excluded_why) if part)
+        texts.append(label(f"Écartée de l'ajustement : {reason}".rstrip(" :"), "body-medium", "muted", xalign=0, wrap=True))
     elif item.note:
         texts.append(label(f"Note : {item.note}", "body-medium", "muted", xalign=0, wrap=True))
     row.append(texts)
@@ -192,13 +194,16 @@ class TodayPage:
         self.detail_button = button("Voir le détail", icon="glucofi-history-symbolic", kind="text", on_click=self.open_detail, halign=Gtk.Align.START)
         self.why.append(self.detail_button)
         self.doses = DoseLayout(list(self.tiles.values()), self.why)
+        self.injections = Section(TITLE, INTRO)
+        self.injections_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.injections.append(self.injections_body)
         self.last = Gtk.Box(spacing=12)
         self.last.add_css_class("last-reading")
         self.info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=GAP, visible=False)
         footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8)
         footer.append(label(TAGLINE, "title-small", "muted", justify=Gtk.Justification.CENTER))
         footer.append(label(DISCLAIMER, "body-small", "muted", wrap=True, justify=Gtk.Justification.CENTER))
-        for widget in (self.read_box, self.alerts_box, self.setup_box, self.doses, self.last, self.info_box, footer):
+        for widget in (self.read_box, self.alerts_box, self.setup_box, self.doses, self.injections, self.last, self.info_box, footer):
             self.page.append(widget)
         self.page.connect("map", lambda *_a: self._start_polling())
         self.page.connect("unmap", lambda *_a: self._stop_polling())
@@ -269,6 +274,7 @@ class TodayPage:
         self.info_box.set_visible(bool(view.info))
         self._fill_setup(view)
         self._fill_doses(view)
+        self._fill_injections(view.injections)
         self._fill_last(view)
         if self.detail is not None:
             self._fill_detail(self.detail.content)
@@ -310,6 +316,48 @@ class TodayPage:
                 flow.append(Gtk.FlowBoxChild(child=LevelChip(item.chip_text, item.level, item.level_label), focusable=False))
             box.append(flow)
         return box
+
+    def _fill_injections(self, view: InjectionsView | None) -> None:
+        clear(self.injections_body)
+        rows = view.rows if view is not None else ()
+        self.injections.set_visible(bool(rows))
+        for index, row in enumerate(rows):
+            if index:
+                self.injections_body.append(divider())
+            line = Adw.WrapBox(child_spacing=12, line_spacing=8, valign=Gtk.Align.CENTER)
+            day = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, width_request=140)
+            day.append(label(row.title, "title-small", xalign=0))
+            if row.detail:
+                day.append(label(row.detail, "body-small", "muted", xalign=0))
+            line.append(day)
+            for cell in row.cells:
+                pill = button(
+                    f"{cell.label} · {cell.status}", kind="tonal" if cell.state is not None else "outlined",
+                    on_click=lambda c=cell: self._ask_injection(c),
+                    tooltip_text="Dire si cette dose a été faite",
+                )
+                pill.update_property([Gtk.AccessibleProperty.LABEL], [cell.description])
+                line.append(pill)
+            self.injections_body.append(line)
+
+    def _ask_injection(self, cell: InjectionCell) -> None:
+        dialog = Adw.AlertDialog(heading=cell.choice_title, body=cell.choice_body)
+        dialog.add_response("cancel", "Annuler")
+        for index, (_state, text) in enumerate(CHOICES):
+            dialog.add_response(str(index), text)
+        taken = str(next(i for i, (state, _t) in enumerate(CHOICES) if state is InjectionState.TAKEN))
+        dialog.set_response_appearance(taken, Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response(taken)
+        dialog.set_close_response("cancel")
+        dialog.connect("response", lambda _d, response: response != "cancel" and self._set_injection(cell, CHOICES[int(response)][0]))
+        dialog.present(self.window)
+
+    def _set_injection(self, cell: InjectionCell, state: InjectionState | None) -> None:
+        try:
+            self.state.set_injection(cell.day, cell.target, state)
+        except ValueError as exc:
+            self._toast(str(exc))
+        self._refresh_all()
 
     def _fill_last(self, view: TodayView) -> None:
         clear(self.last)

@@ -384,6 +384,8 @@ class DosingSettings:
     morning_titration: Titration | None = None
     evening_start: time = time(17, 0)
     evening_end: time = time(21, 59)
+    # écarter la glycémie de référence qui suit une dose cochée « non prise » (voir Injection) ; désactivé par défaut
+    skip_after_missed_dose: bool = False
 
     def __post_init__(self) -> None:
         if not self.insulin.strip():
@@ -412,6 +414,26 @@ class DosingSettings:
     def targets(self) -> tuple[DoseTarget, ...]:
         """Doses que le protocole ajuste : toujours le soir, le matin si l'ordonnance le prévoit."""
         return (DoseTarget.EVENING,) if self.morning_titration is None else (DoseTarget.EVENING, DoseTarget.MORNING)
+
+
+class InjectionState(str, Enum):
+    """Ce que le patient a dit d'une dose un jour donné ; une dose sans ligne dans le journal est « non renseignée »."""
+
+    TAKEN = "taken"
+    MISSED = "missed"
+
+
+INJECTION_STATE_LABELS_FR = {InjectionState.TAKEN: "Prise", InjectionState.MISSED: "Non prise"}
+UNSET_LABEL_FR = "À renseigner"
+
+
+@dataclass(frozen=True)
+class Injection:
+    """Journal des injections : la dose `target` du jour `day` a été prise ou non. Pas de ligne = non renseignée."""
+
+    day: date
+    target: DoseTarget
+    state: InjectionState
 
 
 @dataclass(frozen=True)
@@ -461,8 +483,11 @@ class DoseAdjustment:
     since: datetime
     evidence: tuple[Reading, ...] = ()
     references: tuple[ReferenceReading, ...] = ()
-    # glycémies de référence possibles postérieures à `since`, écartées par une note
+    # glycémies de référence possibles postérieures à `since`, écartées par une note ou par une dose non prise
     excluded: tuple[Reading, ...] = ()
+    # pour chaque mesure de `excluded`, le motif tiré du journal des injections (« dose du soir du 05/10 non prise »),
+    # vide si seule sa note l'écarte
+    excluded_why: tuple[str, ...] = ()
 
     @property
     def changes_dose(self) -> bool:

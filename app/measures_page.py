@@ -120,7 +120,9 @@ class MeasuresPage:
             self.days_box.append(Notice("Saisissez le protocole pour voir les mesures par rapport à l'objectif.", "info"))
             return
         days = None if self.days == "all" else int(self.days)
-        view = measure_view(self.state.readings(days=days), settings, self.period, self.meal, self.state.meters())
+        view = measure_view(
+            self.state.readings(days=days), settings, self.period, self.meal, self.state.meters(), missed=self.state.missed()
+        )
         if not view.days:
             self.days_box.append(self._empty_state())
             return
@@ -226,6 +228,8 @@ class MeasuresPage:
         texts.append(label(line.subtitle, "body-medium", "muted", xalign=0, wrap=True))
         if line.note:
             texts.append(label(line.note, "body-medium", "muted", xalign=0, wrap=True))
+        if line.excluded_why:
+            texts.append(label(f"Écartée : {line.excluded_why}", "body-medium", "muted", xalign=0, wrap=True))
         row.append(texts)
         if line.excluded:
             row.append(tag("Écartée", tooltip=EXCLUDED_TOOLTIP))
@@ -243,6 +247,7 @@ class MeasuresPage:
                 line.retained_tooltip if line.retained else None,
                 EXCLUDED_TOOLTIP if line.excluded else None,
                 f"Note : {line.note}" if line.note else None,
+                f"Écartée : {line.excluded_why}" if line.excluded_why else None,
             ) if part
         )
         widget.update_property([Gtk.AccessibleProperty.LABEL], [description])
