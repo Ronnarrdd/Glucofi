@@ -1,7 +1,7 @@
 """Onglet Aujourd'hui, composé comme sur la tablette (TodayScreen.kt).
 
 De haut en bas : bannière « Bonjour » du renard avec « Récupérer les mesures » et la pastille du lecteur, bandeaux de
-lecture, alertes urgentes, tuiles Matin et Soir avec la colonne « Pourquoi ? », « Injections » (prise ou non prise, quatre jours), « Dernière mesure », informations,
+lecture, alertes urgentes, tuiles Matin et Soir avec la colonne « Pourquoi ? », « Dernière mesure », « Injections » (prise ou non prise, quatre jours), informations,
 puis « Glucofi propose, vous validez. ». Le détail des règles, des glycémies de référence et du lecteur passe dans
 le dialogue « Voir le détail ». Les textes viennent de app/today.py.
 """
@@ -203,7 +203,7 @@ class TodayPage:
         footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8)
         footer.append(label(TAGLINE, "title-small", "muted", justify=Gtk.Justification.CENTER))
         footer.append(label(DISCLAIMER, "body-small", "muted", wrap=True, justify=Gtk.Justification.CENTER))
-        for widget in (self.read_box, self.alerts_box, self.setup_box, self.doses, self.injections, self.last, self.info_box, footer):
+        for widget in (self.read_box, self.alerts_box, self.setup_box, self.doses, self.last, self.injections, self.info_box, footer):
             self.page.append(widget)
         self.page.connect("map", lambda *_a: self._start_polling())
         self.page.connect("unmap", lambda *_a: self._stop_polling())
