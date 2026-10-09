@@ -1,6 +1,6 @@
 import unittest
 
-from evals.meal_estimates import CASES, NOT_MEALS, run, verdict
+from evals.meal_estimates import CASES, NOT_MEALS, REFORMAT_CASES, reformat_ok, reformat_rate, run, verdict
 from services.meals import EstimateError, MealEstimate, NotAMealError
 
 
@@ -11,6 +11,27 @@ def oracle(text, key, models=None):
             carbs = sum(case.carbs) / 2
             return MealEstimate(round(sum(case.kcal) / 2), carbs, case.carbs[0], case.carbs[1])
     raise NotAMealError("Ce texte ne décrit pas un repas")
+
+
+class ReformatEvalSmokeTest(unittest.TestCase):
+    def test_the_checker_accepts_a_good_sentence_and_rejects_bad_ones(self):
+        raw, words = REFORMAT_CASES[0]
+        good = "Soupe de tomate aux vermicelles et un yaourt liégois à la vanille"
+        self.assertTrue(reformat_ok(raw, words, good))
+        for bad in ("", raw, "Soupe de tomate et un yaourt", "Soupe de tomate/vermicelles et un yaourt liégois à la vanille"):
+            with self.subTest(bad):
+                self.assertFalse(reformat_ok(raw, words, bad))
+
+    def test_rate_is_full_for_a_good_reformatter_and_zero_for_one_that_echoes_or_fails(self):
+        good = {"Soupe de tomates/vermicelles et yaourt liégois vanille": "Soupe de tomate aux vermicelles et un yaourt liégois à la vanille",
+                "pates bolo, pomme, eau": "Des pâtes bolo, une pomme et de l'eau"}
+        self.assertEqual(reformat_rate(lambda t, k, models=None: MealEstimate(1, 1, 1, 1, text=good[t]))[0], 1.0)
+        self.assertEqual(reformat_rate(lambda t, k, models=None: MealEstimate(1, 1, 1, 1, text=t))[0], 0.0)
+
+        def down(t, k, models=None):
+            raise EstimateError("indisponible")
+
+        self.assertEqual(reformat_rate(down)[0], 0.0)
 
 
 class MealEvalSmokeTest(unittest.TestCase):

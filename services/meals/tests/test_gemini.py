@@ -39,6 +39,21 @@ class ParseEstimateTest(unittest.TestCase):
         self.assertEqual((estimate.calories_kcal, estimate.carbs_g, estimate.carbs_low_g, estimate.carbs_high_g), (660, 96.0, 85.0, 110.0))
         self.assertEqual([i.name for i in estimate.items], ["Pâtes bolognaise (350 g)", "Pomme (150 g)"])
 
+    def test_the_reformatted_text_is_kept_on_one_clean_line(self):
+        wanted = "Soupe de tomate aux vermicelles et un yaourt liégois à la vanille"
+        self.assertEqual(parse_estimate(reply(text=f"  Soupe de tomate aux vermicelles\n et un yaourt liégois à la vanille ")).text, wanted)
+
+    def test_a_missing_or_unusable_reformatted_text_becomes_empty(self):
+        for bad in (None, "", "   ", 12, "x" * 501):
+            with self.subTest(bad):
+                self.assertEqual(parse_estimate(reply(text=bad)).text, "")
+        self.assertEqual(parse_estimate(reply()).text, "")
+
+    def test_the_prompt_asks_for_the_reformatting_and_the_schema_requires_it(self):
+        sent = json.loads(request_body("soupe/vermicelles"))
+        self.assertIn("Soupe de tomate aux vermicelles", sent["systemInstruction"]["parts"][0]["text"])
+        self.assertIn("text", sent["generationConfig"]["responseSchema"]["required"])
+
     def test_the_range_always_contains_the_estimate(self):
         estimate = parse_estimate(reply(carbs_g=50, carbs_low_g=60, carbs_high_g=40))
         self.assertEqual((estimate.carbs_low_g, estimate.carbs_g, estimate.carbs_high_g), (50, 50, 50))

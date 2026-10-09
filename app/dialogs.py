@@ -366,6 +366,8 @@ def meal_dialog(parent: Gtk.Widget, state: AppState, cell: MealCell, on_done: Ca
             error.set_visible(True)
             return
         estimate[0] = outcome
+        if outcome.text:
+            text.set_text(outcome.text)
         carbs.set_text(f"{outcome.carbs_g:g}".replace(".", ","))
         kcal.set_text(str(outcome.calories_kcal))
         detail = " · ".join(f"{i.name} : {fmt_carbs(i.carbs_g)}" for i in outcome.items)

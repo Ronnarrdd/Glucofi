@@ -2,7 +2,7 @@
 
 Journal alimentaire : estimation des calories et des glucides d'un repas écrit en texte libre, par Gemini (plan gratuit).
 
-- `estimate_meal(texte, clé)` : un appel REST `generateContent`, réponse JSON typée (`MealEstimate` : calories, glucides, fourchette basse/haute, détail par aliment). Seul le texte du repas part chez Google.
+- `estimate_meal(texte, clé)` : un appel REST `generateContent`, réponse JSON typée (`MealEstimate` : calories, glucides, fourchette basse/haute, détail par aliment, et `text` : la saisie remise en forme en une phrase française qui garde les mêmes aliments et quantités, ex. « Soupe de tomates/vermicelles et yaourt liégois vanille » donne « Soupe de tomate aux vermicelles et un yaourt liégois à la vanille » ; `""` si Gemini n'en renvoie pas de valable, l'app garde alors la saisie). Seul le texte du repas part chez Google.
 - `parse_estimate` valide la réponse : texte qui n'est pas un repas refusé, valeurs négatives ou invraisemblables (> 400 g de glucides, > 5 000 kcal) refusées, fourchette recadrée autour de l'estimation.
 - Toute panne devient une `EstimateError` dont le message est écrit pour le patient : clé refusée, quota, hors ligne, réponse illisible. Une relance sur les erreurs 5xx.
 - **La clé n'est jamais dans le dépôt.** `load_api_key` lit `GEMINI_API_KEY` dans l'environnement, sinon dans `.env` (racine du projet, ou dossier de données de Glucofi). `.env` est ignoré par git ; `.env.example` montre le format. Sur la tablette, la clé vient de `local.properties` (ignoré par git aussi).
