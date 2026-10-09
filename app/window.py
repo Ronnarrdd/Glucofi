@@ -23,6 +23,7 @@ from app.charts_page import CHART_PERIODS, HAS_MPL, ChartsPage
 from app.components import NavBar, label
 from app.dialogs import manual_dose_dialog, onboarding_dialog, preferences_dialog
 from app.doses_page import DosesPage
+from app.meals_page import MealsPage
 from app.measures_page import MeasuresPage
 from app.state import AppState, import_message, merge_message
 from app.today_page import TodayPage
@@ -38,6 +39,7 @@ PAGES = (
     ("today", "Aujourd'hui", "glucofi-home-symbolic", "glucofi-home-fill-symbolic"),
     ("measures", "Mesures", "glucofi-measures-symbolic", "glucofi-measures-symbolic"),
     ("charts", "Graphiques", "glucofi-charts-symbolic", "glucofi-charts-symbolic"),
+    ("meals", "Repas", "glucofi-meals-symbolic", "glucofi-meals-fill-symbolic"),
     ("doses", "Doses", "glucofi-doses-symbolic", "glucofi-doses-fill-symbolic"),
 )
 NARROW = "max-width: 600sp"
@@ -58,8 +60,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.today = TodayPage(self, state, self.refresh, self.toast)
         self.measures = MeasuresPage(state, self.refresh)
         self.charts = ChartsPage(state)
+        self.meals = MealsPage(state, self.refresh)
         self.doses = DosesPage(state)
-        for (name, title, icon, _active), page in zip(PAGES, (self.today, self.measures, self.charts, self.doses)):
+        for (name, title, icon, _active), page in zip(PAGES, (self.today, self.measures, self.charts, self.meals, self.doses)):
             self.stack.add_titled_with_icon(page.widget, name, title, icon)
         self.stack.connect("notify::visible-child-name", self._on_page_changed)
 
@@ -122,7 +125,7 @@ class MainWindow(Adw.ApplicationWindow):
             breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(condition))
             breakpoint.add_setter(self.toolbar, "reveal-bottom-bars", True)
             breakpoint.add_setter(self.nav, "visible", False)
-            for page in (self.today, self.measures, self.charts, self.doses):
+            for page in (self.today, self.measures, self.charts, self.meals, self.doses):
                 page.narrow_setters(breakpoint)
             self.add_breakpoint(breakpoint)
             return breakpoint
@@ -467,6 +470,7 @@ class MainWindow(Adw.ApplicationWindow):
     def refresh(self) -> None:
         self.today.refresh()
         self.doses.refresh()
+        self.meals.refresh()
         self.measures.refresh()
         self.charts.dirty = True
         if self.stack.get_visible_child_name() == "charts":

@@ -113,7 +113,7 @@ class MigrationV5Test(unittest.TestCase):
 
     def test_existing_protocol_becomes_the_first_version(self):
         store = self.open(V4_WITH_PROTOCOL)
-        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(4, 5), (5, 6)])
+        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(4, 5), (5, 6), (6, 7)])
         history = store.protocol_changes()
         self.assertEqual([(c.effective, c.settings, c.note) for c in history], [
             (datetime(2026, 7, 1), PROTOCOL, "Protocole saisi avant l'historique"),

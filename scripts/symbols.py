@@ -55,6 +55,9 @@ SYMBOLS = {
     "remove": "remove",
     "close": "close",
     "history": "history",
+    "meals": "restaurant",
+    "meals-fill": "restaurant_fill1",
+    "estimate": "calculate",
 }
 
 SVG = re.compile(

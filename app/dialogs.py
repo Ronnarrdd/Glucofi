@@ -7,18 +7,21 @@ lancement s'ouvre sur la bannière du renard « Bienvenue dans Glucofi ».
 
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime, time
 from typing import Callable
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 from app.art import FoxBanner
 from app.components import button, describe, label
+from app.meals import MealCell, baseline_of, entry_from_form, fmt_carbs, fmt_kcal
 from app.measures import marker_of
 from app.protocol import protocol_to_form
 from app.protocol_editor import ProtocolEditor, entry_row, form_group
 from app.state import AppState, FormError, exclusion_option, parse_count
-from contracts import NOTE_MAX_CHARS, NOTE_TAG_LABELS_FR, NoteTag, Reading, ReadingNote
+from contracts import MEAL_TEXT_MAX_CHARS, NOTE_MAX_CHARS, NOTE_TAG_LABELS_FR, NoteTag, Reading, ReadingNote
+from services.meals import EstimateError, MealEstimate
 from services.dosing import fmt_g_l
 
 MAX_UI = 80
@@ -310,6 +313,110 @@ def note_dialog(parent: Gtk.Widget, state: AppState, reading: Reading, on_done: 
     action.connect("clicked", on_save)
     if reading.note is not None:
         delete = button("Supprimer la note", icon="glucofi-close-symbolic", kind="text", on_click=lambda: save(None), halign=Gtk.Align.CENTER)
+        delete.add_css_class("destructive")
+        column.append(delete)
+    dialog.present(parent)
+
+
+def meal_dialog(parent: Gtk.Widget, state: AppState, cell: MealCell, on_done: Callable[[], None]) -> None:
+    """Un repas : ce qui a été mangé, estimation par Gemini (en tâche de fond), chiffres modifiables à la main."""
+    entry = cell.entry
+    estimate: list[MealEstimate | None] = [baseline_of(entry)]  # l'estimation dont les chiffres affichés viennent
+    busy = [False]
+    day_text = f"{cell.day:%d/%m/%Y}"
+
+    what = form_group(f"{cell.label} du {day_text}", "Écrivez ce que vous avez mangé et bu, avec les quantités si vous les connaissez.")
+    text = Adw.EntryRow(title="Ce que vous avez mangé", max_length=MEAL_TEXT_MAX_CHARS)
+    text.set_text(cell.text)
+    what.add(text)
+
+    estimate_button = button("Estimer avec Gemini", icon="glucofi-estimate-symbolic", kind="tonal", halign=Gtk.Align.START)
+    spinner = Adw.Spinner(visible=False)
+    bar = Gtk.Box(spacing=12)
+    bar.append(estimate_button)
+    bar.append(spinner)
+    result = Gtk.Label(wrap=True, xalign=0, visible=False)
+    result.add_css_class("body-medium")
+    result.add_css_class("muted")
+    numbers = form_group("Estimation", "Corrigez les chiffres si vous les connaissez mieux que Gemini.")
+    carbs = entry_row("Glucides", "" if entry is None or entry.carbs_g is None else f"{entry.carbs_g:g}".replace(".", ","), "g")
+    kcal = entry_row("Calories", "" if entry is None or entry.calories_kcal is None else str(entry.calories_kcal), "kcal")
+    numbers.add(carbs)
+    numbers.add(kcal)
+    error = _error_label()
+    save_button = button("Enregistrer", tall=True)
+    dialog, column = _form_dialog(f"Repas · {cell.label}", [what, bar, result, numbers, error], save_button)
+
+    def show_range() -> None:
+        current = estimate[0]
+        if current is None or current.carbs_low_g == current.carbs_high_g:
+            result.set_visible(False)
+            return
+        result.set_label(f"Fourchette de Gemini : {current.carbs_low_g:g} à {fmt_carbs(current.carbs_high_g)} de glucides.".replace(".", ","))
+        result.set_visible(True)
+
+    show_range()
+
+    def finished(outcome: MealEstimate | EstimateError) -> None:
+        busy[0] = False
+        spinner.set_visible(False)
+        estimate_button.set_sensitive(True)
+        if isinstance(outcome, EstimateError):
+            error.set_label(str(outcome))
+            error.set_visible(True)
+            return
+        estimate[0] = outcome
+        carbs.set_text(f"{outcome.carbs_g:g}".replace(".", ","))
+        kcal.set_text(str(outcome.calories_kcal))
+        detail = " · ".join(f"{i.name} : {fmt_carbs(i.carbs_g)}" for i in outcome.items)
+        show_range()
+        if detail:
+            result.set_label(f"{result.get_label()}\n{detail}".strip())
+            result.set_visible(True)
+
+    def on_estimate(_btn):
+        if busy[0]:
+            return
+        error.set_visible(False)
+        wanted = text.get_text().strip()
+        if not wanted:
+            error.set_label("Décrivez d'abord ce que vous avez mangé.")
+            error.set_visible(True)
+            return
+        busy[0] = True
+        spinner.set_visible(True)
+        estimate_button.set_sensitive(False)
+
+        def work():
+            try:
+                outcome: MealEstimate | EstimateError = state.estimate_meal(wanted)
+            except EstimateError as exc:
+                outcome = exc
+            except Exception as exc:  # noqa: BLE001 : jamais de fil qui meurt en silence, le bouton doit se rendre
+                outcome = EstimateError(f"L'estimation a échoué ({type(exc).__name__}).")
+            GLib.idle_add(finished, outcome)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_save(_btn):
+        try:
+            state.save_meal(entry_from_form(cell.day, cell.slot, text.get_text(), kcal.get_text(), carbs.get_text(), estimate[0]))
+        except ValueError as exc:
+            error.set_label(_sentence(exc))
+            error.set_visible(True)
+            return
+        dialog.close()
+        on_done()
+
+    def erase():
+        state.clear_meal(cell.day, cell.slot)
+        dialog.close()
+        on_done()
+
+    estimate_button.connect("clicked", on_estimate)
+    save_button.connect("clicked", on_save)
+    if entry is not None:
+        delete = button("Effacer ce repas", icon="glucofi-close-symbolic", kind="text", on_click=erase, halign=Gtk.Align.CENTER)
         delete.add_css_class("destructive")
         column.append(delete)
     dialog.present(parent)

@@ -179,8 +179,8 @@ class MigrationV2Test(TimezoneParis, unittest.TestCase):
         migration = store.last_migration
         self.assertEqual((migration.readings_before, migration.readings_after, migration.epochs_fixed), (3, 3, 2))
         self.assertEqual([r.epoch for r in store.readings()], [1610694000, 1782970560, 1782989940])
-        self.assertEqual(store.get_setting("schema_version"), 6)
-        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)])
+        self.assertEqual(store.get_setting("schema_version"), 7)
+        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)])
         self.assertEqual(store.get_setting("patient_name"), "Test")
         backup = sqlite3.connect(migration.backup)
         self.addCleanup(backup.close)
@@ -195,10 +195,10 @@ class MigrationV2Test(TimezoneParis, unittest.TestCase):
         self.assertIsNone(store.last_migration)
         self.assertEqual(len(list(Path(self.dir.name).glob("*.bak"))), 1)
 
-    def test_new_database_starts_at_v6(self):
+    def test_new_database_starts_at_v7(self):
         store = Store(Path(self.dir.name) / "neuve.db")
         self.addCleanup(store.close)
-        self.assertEqual(store.get_setting("schema_version"), 6)
+        self.assertEqual(store.get_setting("schema_version"), 7)
         self.assertIsNone(store.last_migration)
         t = datetime(2026, 7, 2, 7, 36)
         store.import_readings([Reading(t, 120, 1782974160)], "lecteur")
@@ -302,8 +302,8 @@ class MigrationV3Test(TimezoneParis, unittest.TestCase):
     def test_v2_database_gets_marker_columns_and_keeps_rows(self):
         store = Store(self.path)
         self.addCleanup(store.close)
-        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(2, 3), (3, 4), (4, 5), (5, 6)])
-        self.assertEqual(store.get_setting("schema_version"), 6)
+        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(2, 3), (3, 4), (4, 5), (5, 6), (6, 7)])
+        self.assertEqual(store.get_setting("schema_version"), 7)
         self.assertEqual(store.readings(), [Reading(datetime(2026, 7, 2, 7, 36), 120, 1782970560, 4)])
         self.assertIsNone(store.readings()[0].meal)
         old = store.last_import()
@@ -356,8 +356,8 @@ class MigrationV4Test(TimezoneParis, unittest.TestCase):
     def test_v3_database_gets_notes_and_keeps_rows(self):
         store = Store(self.path)
         self.addCleanup(store.close)
-        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(3, 4), (4, 5), (5, 6)])
-        self.assertEqual(store.get_setting("schema_version"), 6)
+        self.assertEqual([(m.from_version, m.to_version) for m in store.migrations], [(3, 4), (4, 5), (5, 6), (6, 7)])
+        self.assertEqual(store.get_setting("schema_version"), 7)
         self.assertEqual([(r.mg_dl, r.meal, r.note) for r in store.readings()], [(120, Meal.FASTING, None)])
         self.assertEqual([(c.evening_ui, c.excluded) for c in store.dose_changes()], [(6, ())])
         store.set_note(store.readings()[0], ReadingNote((NoteTag.ILLNESS,)))

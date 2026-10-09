@@ -28,7 +28,7 @@ from gi.repository import Adw, Gdk, GLib, Graphene, Gtk  # noqa: E402
 
 from app.main import APP_ID, install_style  # noqa: E402
 from app.state import AppState  # noqa: E402
-from contracts import DosingSettings, HighTier, LowTier, Meal, NoteTag, Reading, ReadingNote, Titration  # noqa: E402
+from contracts import DosingSettings, HighTier, LowTier, Meal, MealEntry, MealSlot, NoteTag, Reading, ReadingNote, Titration  # noqa: E402
 from scripts import demo_export, headless  # noqa: E402
 from services.store import Store  # noqa: E402
 
@@ -47,7 +47,7 @@ DEMO_FULL = replace(
 )
 
 SCENARIOS = ("default", "proposal", "onboarding", "measures", "titration")
-PAGES = ("today", "charts", "measures", "doses")
+PAGES = ("today", "charts", "measures", "meals", "doses")
 WIDTH, HEIGHT = 1000, 1100
 # scénario « measures » : onglet Mesures en largeur (px) et thème donnés
 MEASURES_SHOTS = {"mesures-clair": (1000, False), "mesures-sombre": (1000, True), "mesures-etroit": (360, False)}
@@ -57,6 +57,7 @@ README_SHOTS = {
     "aujourdhui.png": ("titration", ("today",)),
     "mesures.png": ("default", ("measures",)),
     "graphiques.png": ("default", ("charts",)),
+    "repas.png": ("default", ("meals",)),
     "premier-lancement.png": ("onboarding", ("today",)),
     "protocole.png": ("titration", ("doses", "preferences", "preferences-0.45")),
 }
@@ -138,6 +139,22 @@ def _add_demo_notes(state: AppState) -> None:
         state.set_note(mornings[2], ReadingNote((NoteTag.SIDE_EFFECT,), "nausées après l'injection"))
 
 
+def _add_demo_meals(state: AppState) -> None:
+    """Repas fictifs sur les trois derniers jours : estimés, corrigé à la main, écrit mais pas estimé."""
+    today = date.today()
+    B, L, D = MealSlot.BREAKFAST, MealSlot.LUNCH, MealSlot.DINNER
+    for back, slot, text, kcal, carbs, source in (
+        (0, B, "2 tartines de pain complet, beurre, confiture, un café", 380, 52.0, "gemini"),
+        (0, L, "pâtes bolognaise, un yaourt nature, une pomme", 660, 96.0, "gemini"),
+        (1, B, "bol de muesli avec du lait", 340, 48.0, "manual"),
+        (1, L, "salade de poulet, une tranche de pain", 450, 32.0, "gemini"),
+        (1, D, "soupe de légumes et un fromage blanc", None, None, None),
+        (2, L, "riz, haricots verts, steak haché", 620, 70.0, "gemini"),
+    ):
+        low, high = (round(carbs * 0.88), round(carbs * 1.14)) if source == "gemini" else (None, None)
+        state.save_meal(MealEntry(today - timedelta(days=back), slot, text, kcal, carbs, low, high, source))
+
+
 def demo_export_file(days: int = 60, end: date | None = None) -> Path:
     """Export fictif de scripts.demo_export jusqu'à `end` (aujourd'hui par défaut), dans un fichier temporaire."""
     path = Path(tempfile.mkdtemp(prefix="glucofi-demo-export-")) / "demo.json"
@@ -155,6 +172,7 @@ def demo_state(export: Path, scenario: str) -> AppState:
     if scenario != "onboarding":
         state.start_protocol("Démo", start, 10, 6, DEMO_PROTOCOL)
         _add_demo_notes(state)
+        _add_demo_meals(state)
     if scenario == "proposal":
         state.store.import_readings(_high_mornings_until_today(), "démo")
     if scenario == "titration":

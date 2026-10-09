@@ -54,7 +54,7 @@ class InjectionStoreTest(unittest.TestCase):
 
     def test_a_new_database_is_at_the_current_schema(self):
         self.assertEqual(self.store.get_setting("schema_version"), SCHEMA_VERSION)
-        self.assertEqual(SCHEMA_VERSION, 6)
+        self.assertEqual(SCHEMA_VERSION, 7)
 
 
 class MigrationV6Test(unittest.TestCase):
@@ -70,8 +70,8 @@ class MigrationV6Test(unittest.TestCase):
             before = path.read_bytes()
             migrated = Store(path)
             self.addCleanup(migrated.close)
-            self.assertEqual([(m.from_version, m.to_version) for m in migrated.migrations], [(5, 6)])
-            self.assertEqual(migrated.get_setting("schema_version"), 6)
+            self.assertEqual([(m.from_version, m.to_version) for m in migrated.migrations], [(5, 6), (6, 7)])
+            self.assertEqual(migrated.get_setting("schema_version"), 7)
             self.assertEqual(migrated.injections(), [])
             self.assertEqual(len(migrated.dose_changes()), 1)
             backup = migrated.last_migration.backup

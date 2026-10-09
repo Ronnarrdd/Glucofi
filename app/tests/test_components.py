@@ -284,8 +284,8 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(self.app.get_accels_for_action("win.fetch"), ["<Control>r"])
         self.assertEqual(self.window.today.fetch_button.get_action_name(), "win.fetch")
 
-    def test_four_destinations_in_the_tablet_order(self):
-        self.assertEqual(list(self.window.nav.buttons), ["today", "measures", "charts", "doses"])
+    def test_five_destinations_in_the_tablet_order(self):
+        self.assertEqual(list(self.window.nav.buttons), ["today", "measures", "charts", "meals", "doses"])
         self.assertEqual(list(self.window.bottom_nav.buttons), list(self.window.nav.buttons))
         self.window.stack.set_visible_child_name("doses")
         self.assertTrue(self.window.bottom_nav.buttons["doses"].get_active())

@@ -30,6 +30,8 @@ from contracts import (
     DosingSettings,
     Injection,
     InjectionState,
+    MealEntry,
+    MealSlot,
     MeterInfo,
     ProtocolChange,
     Reading,
@@ -39,6 +41,7 @@ from contracts import (
 from services.adherence import missed_doses
 from services.device import FetchResult, fmt_offset, parse_file
 from services.dosing import apply_adjustment, can_exclude, fmt_g_l, propose, reference_target
+from services.meals import MealEstimate, estimate_meal, load_api_key
 from services.store import ImportSummary, MergeSummary, Store
 
 log = logging.getLogger("glucofi.state")
@@ -126,6 +129,7 @@ def merge_message(summary: MergeSummary) -> str:
             (summary.markers_added, "marqueur repas ajouté", "marqueurs repas ajoutés"),
             (summary.notes_added + summary.notes_updated, "note ajoutée", "notes ajoutées"),
             (summary.injections_added + summary.injections_updated, "injection renseignée", "injections renseignées"),
+            (summary.meals_added + summary.meals_updated, "repas renseigné", "repas renseignés"),
             (summary.doses_added, "dose validée ajoutée", "doses validées ajoutées"),
             (summary.protocol_versions_added, "version du protocole ajoutée", "versions du protocole ajoutées"),
         )
@@ -144,11 +148,14 @@ class AppState:
         data_dir: Path,
         today: Callable[[], date] = date.today,
         now: Callable[[], datetime] = datetime.now,
+        meal_estimator: Callable[[str], MealEstimate] | None = None,
     ):
         self.store = store
         self.data_dir = data_dir
         self._today = today
         self._now = now
+        # remplaçable (tests, tablette) ; par défaut Gemini, avec la clé de GEMINI_API_KEY ou du fichier .env
+        self.meal_estimator = meal_estimator or (lambda text: estimate_meal(text, load_api_key()))
 
     @property
     def raw_dir(self) -> Path:
@@ -341,3 +348,22 @@ class AppState:
         for warning in summary.warnings:
             log.warning("fusion de %s : %s", summary.source, warning)
         return summary
+
+    # Journal alimentaire
+
+    def meals(self, since: date | None = None, until: date | None = None) -> list[MealEntry]:
+        return self.store.meals(since, until)
+
+    def estimate_meal(self, text: str) -> MealEstimate:
+        """Estimation par Gemini (réseau, plusieurs secondes : hors du fil de l'interface). Lève EstimateError."""
+        return self.meal_estimator(text)
+
+    def save_meal(self, entry: MealEntry) -> None:
+        if entry.day > self._today():
+            raise ValueError("un repas à venir ne peut pas être enregistré")
+        self.store.set_meal(entry)
+        log.info("repas : %s du %s, %s", entry.slot.value, entry.day, entry.source or "sans estimation")
+
+    def clear_meal(self, day: date, slot: MealSlot) -> None:
+        self.store.set_meal(None, day=day, slot=slot)
+        log.info("repas : %s du %s effacé", slot.value, day)

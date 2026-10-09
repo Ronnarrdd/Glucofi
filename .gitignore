@@ -5,6 +5,12 @@ mesures*.json
 raw/
 traces/
 
+# Clé API Gemini (voir .env.example) : jamais dans le dépôt
+.env
+
+# Brouillons des pages BookStack (publiées à la main sur le wiki)
+Bookstack/
+
 # Sorties générées
 *.pdf
 services/device/accuchek-src/accuchek

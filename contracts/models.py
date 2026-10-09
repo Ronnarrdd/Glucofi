@@ -436,6 +436,40 @@ class Injection:
     state: InjectionState
 
 
+class MealSlot(str, Enum):
+    """Les trois repas du journal alimentaire (à ne pas confondre avec Meal, le marqueur saisi sur le lecteur)."""
+
+    BREAKFAST = "breakfast"
+    LUNCH = "lunch"
+    DINNER = "dinner"
+
+
+MEAL_SLOT_LABELS_FR = {MealSlot.BREAKFAST: "Matin", MealSlot.LUNCH: "Midi", MealSlot.DINNER: "Soir"}
+MEAL_TEXT_MAX_CHARS = 500
+
+
+@dataclass(frozen=True)
+class MealEntry:
+    """Journal alimentaire : ce qui a été mangé au repas `slot` du jour `day`, et l'estimation qui va avec.
+
+    `carbs_g` est l'estimation centrale, `carbs_low_g` et `carbs_high_g` sa fourchette ; None tant que le repas n'a
+    pas été estimé. `source` dit d'où viennent les chiffres : "gemini" (estimés) ou "manual" (saisis ou corrigés).
+    """
+
+    day: date
+    slot: MealSlot
+    text: str
+    calories_kcal: int | None = None
+    carbs_g: float | None = None
+    carbs_low_g: float | None = None
+    carbs_high_g: float | None = None
+    source: str | None = None
+
+    @property
+    def estimated(self) -> bool:
+        return self.calories_kcal is not None and self.carbs_g is not None
+
+
 @dataclass(frozen=True)
 class ProtocolChange:
     """Version du protocole en vigueur à partir de `effective` (la plus récente est le protocole en cours)."""

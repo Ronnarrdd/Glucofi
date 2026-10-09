@@ -3,7 +3,7 @@
 Chaque scénario (graine fixe) tire au hasard une suite d'opérations sur l'un ou l'autre appareil :
 lecture du lecteur (plages de mesures qui se recouvrent, marqueurs parfois absents), note posée, modifiée
 ou effacée (parfois à la même seconde sur les deux appareils), dose déclarée prise, non prise ou remise à
-« non renseignée » (journal des injections), dose validée, protocole modifié, fusion
+« non renseignée » (journal des injections), repas écrit puis estimé, corrigé ou effacé (journal alimentaire), dose validée, protocole modifié, fusion
 (export d'un appareil, fusion dans l'autre). À la fin, deux allers-retours.
 
 Vérifié à la fin, contre un oracle tenu à côté (tout ce qui a été fait, sur les deux appareils) :
@@ -12,6 +12,7 @@ Vérifié à la fin, contre un oracle tenu à côté (tout ce qui a été fait, 
 - marqueurs : une mesure porte le marqueur qu'une lecture lui a donné ;
 - notes : la dernière modification (date, puis contenu) l'emporte, effacement compris ;
 - journal des injections : la dernière déclaration (date, puis état) l'emporte, effacement compris ;
+- journal alimentaire : la dernière écriture (date, puis texte, glucides, calories) l'emporte, effacement compris ;
 - protocole en cours : la version la plus récente ;
 - idempotence : une fusion de plus ne change rien ;
 - le fichier fusionné n'est jamais modifié.
@@ -36,7 +37,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from contracts import DoseChange, DoseRule, DosingSettings, DoseTarget, InjectionState, Meal, NoteTag, Reading, ReadingNote
+from contracts import DoseChange, DoseRule, DosingSettings, DoseTarget, InjectionState, Meal, MealEntry, MealSlot, NoteTag, Reading, ReadingNote
 from services.store import MergeSummary, Store
 from services.store.store import settings_json
 
@@ -52,6 +53,12 @@ class Oracle:
     doses: set[tuple] = field(default_factory=set)
     protocols: set[tuple[str, str]] = field(default_factory=set)
     injections: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
+
+    meals: dict[tuple[str, str], tuple[str, tuple]] = field(default_factory=dict)
+
+    def meal(self, key, at: str, content: tuple) -> None:
+        if key not in self.meals or (at, content) > self.meals[key]:
+            self.meals[key] = (at, content)
 
     def injection(self, key, at: str, state: str) -> None:
         if key not in self.injections or (at, state) > self.injections[key]:
@@ -79,6 +86,10 @@ def content_of(store: Store) -> tuple:
         sorted((c.effective, c.morning_ui, c.evening_ui, c.rule.value, c.evidence) for c in store.dose_changes()),
         sorted((c.effective, json.dumps(settings_json(c.settings), sort_keys=True)) for c in store.protocol_changes()),
         store.db.execute("SELECT day, target, state, updated_at FROM injections WHERE state IS NOT NULL ORDER BY day, target").fetchall(),
+        store.db.execute(
+            "SELECT day, slot, text, calories_kcal, carbs_g, carbs_low_g, carbs_high_g, source, updated_at FROM meals"
+            " WHERE text IS NOT NULL ORDER BY day, slot"
+        ).fetchall(),
         store.dosing_settings(),
         store.get_setting("patient_name"),
     )
@@ -166,6 +177,33 @@ class Scenario:
         store.db.commit()
         self.oracle.injection((day.isoformat(), target.value), at, state.value if state is not None else "")
 
+    def write_meal(self, name: str, same_second: bool) -> None:
+        """Repas écrit puis estimé ou corrigé à la main, ou effacé ; les jours et repas se recoupent entre appareils."""
+        store = self.devices[name]
+        day = (T0 + timedelta(days=self.rng.randint(0, 5))).date()
+        slot = self.rng.choice(list(MealSlot))
+        kind = self.rng.choice(("estimé", "estimé", "corrigé", "texte seul", "effacé"))
+        if kind == "effacé":
+            store.set_meal(None, day=day, slot=slot)
+            content = ("", 0, 0)
+        else:
+            kcal = self.rng.randint(150, 1200)
+            carbs = float(self.rng.randint(5, 150))
+            text = f"repas {self.rng.randint(0, 3)}"
+            if kind == "texte seul":
+                store.set_meal(MealEntry(day, slot, text))
+                content = (text, 0, 0)
+            else:
+                store.set_meal(MealEntry(day, slot, text, kcal, carbs, carbs - 5, carbs + 5, "gemini" if kind == "estimé" else "manual"))
+                content = (text, carbs, kcal)
+        shared = same_second and bool(self.declared_this_second) and name not in self.declared_this_second
+        self.ops["repas à la même seconde que l'autre appareil"] += shared
+        at = self.tick(shared).isoformat()
+        self.declared_this_second.add(name)
+        store.db.execute("UPDATE meals SET updated_at = ? WHERE day = ? AND slot = ?", (at, day.isoformat(), slot.value))
+        store.db.commit()
+        self.oracle.meal((day.isoformat(), slot.value), at, content)
+
     def validate_dose(self, name: str) -> None:
         store = self.devices[name]
         current = store.current_dose()
@@ -207,6 +245,9 @@ class Scenario:
             elif roll < 0.65:
                 self.ops["injection"] += 1
                 self.declare_injection(name, same_second=self.rng.random() < 0.4)
+            elif roll < 0.69:
+                self.ops["repas"] += 1
+                self.write_meal(name, same_second=self.rng.random() < 0.4)
             elif roll < 0.74:
                 self.ops["dose"] += 1
                 self.validate_dose(name)
@@ -247,6 +288,10 @@ class Scenario:
             wanted = {key: state for key, (_at, state) in self.oracle.injections.items() if state}
             if declared != wanted:
                 self.problems.append(f"{name} : journal des injections {declared}, attendu {wanted}")
+            meals = {(m.day.isoformat(), m.slot.value): m.text for m in store.meals()}
+            wanted_meals = {key: content[0] for key, (_at, content) in self.oracle.meals.items() if content[0]}
+            if meals != wanted_meals:
+                self.problems.append(f"{name} : journal alimentaire {meals}, attendu {wanted_meals}")
             doses = {(c.effective, c.morning_ui, c.evening_ui, c.rule.value, c.evidence) for c in store.dose_changes()}
             if doses != self.oracle.doses or len(store.dose_changes()) != len(self.oracle.doses):
                 self.problems.append(f"{name} : doses {len(store.dose_changes())}, attendu {len(self.oracle.doses)}")
@@ -290,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         writer = csv.writer(fh)
         writer.writerow([
             "scenario", "vers", "depuis", "mesures", "marqueurs", "notes_ajoutees", "notes_mises_a_jour",
-            "injections_ajoutees", "injections_mises_a_jour", "doses", "versions_protocole", "protocole_change", "alertes",
+            "injections_ajoutees", "injections_mises_a_jour", "repas_ajoutes", "repas_mis_a_jour", "doses", "versions_protocole", "protocole_change", "alertes",
         ])
         for seed in range(args.scenarios):
             scenario = run_scenario(seed, args.steps)
@@ -300,13 +345,14 @@ def main(argv: list[str] | None = None) -> int:
             for into, source, s in scenario.merges:
                 writer.writerow([
                     seed, into, source, s.readings_added, s.markers_added, s.notes_added, s.notes_updated,
-                    s.injections_added, s.injections_updated, s.doses_added, s.protocol_versions_added, int(s.protocol_changed), " | ".join(s.warnings),
+                    s.injections_added, s.injections_updated, s.meals_added, s.meals_updated, s.doses_added, s.protocol_versions_added, int(s.protocol_changed), " | ".join(s.warnings),
                 ])
                 totals["fusions"] += 1
                 totals["mesures"] += s.readings_added
                 totals["marqueurs"] += s.markers_added
                 totals["notes"] += s.notes_added + s.notes_updated
                 totals["injections"] += s.injections_added + s.injections_updated
+                totals["repas"] += s.meals_added + s.meals_updated
                 totals["doses"] += s.doses_added
                 totals["versions"] += s.protocol_versions_added
                 warned += bool(s.warnings)
@@ -319,7 +365,8 @@ def main(argv: list[str] | None = None) -> int:
     print("| --- | --- |")
     for label, key in (("fusions", "fusions"), ("mesures", "mesures"), ("marqueurs complétés", "marqueurs"),
                        ("notes ajoutées ou mises à jour", "notes"),
-                       ("injections ajoutées ou mises à jour", "injections"), ("doses validées", "doses"),
+                       ("injections ajoutées ou mises à jour", "injections"),
+                       ("repas ajoutés ou mis à jour", "repas"), ("doses validées", "doses"),
                        ("versions du protocole", "versions")):
         print(f"| {label} | {totals[key]} |")
     print(f"| fusions avec alerte (modifié des deux côtés) | {warned} |")

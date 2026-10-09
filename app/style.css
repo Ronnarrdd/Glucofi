@@ -474,6 +474,17 @@ button.stepper-button {
   color: var(--glucofi-on-secondary-container);
 }
 
+.meal-row {
+  border-radius: 16px;
+  padding: 0 8px;
+  min-height: 48px;
+  font-weight: 400;
+}
+
+.meal-row:hover {
+  background-color: var(--glucofi-secondary-container);
+}
+
 .note-tag {
   border-radius: 9999px;
   padding: 4px 12px;

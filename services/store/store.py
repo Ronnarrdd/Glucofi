@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 from contracts import (
+    MEAL_TEXT_MAX_CHARS,
     NOTE_MAX_CHARS,
     PROTOCOL_FIELDS,
     ClockAction,
@@ -24,6 +25,8 @@ from contracts import (
     Injection,
     InjectionState,
     Meal,
+    MealEntry,
+    MealSlot,
     MeterClock,
     MeterInfo,
     NoteTag,
@@ -36,7 +39,7 @@ from contracts import (
 
 log = logging.getLogger("glucofi.store")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SQLITE_HEADER = b"SQLite format 3\x00"
 TIME_FIELDS = ("morning_start", "morning_end", "evening_start", "evening_end")
 # sauvegardes « avant-fusion » gardées : une par fusion qui a changé quelque chose
@@ -120,6 +123,18 @@ CREATE TABLE IF NOT EXISTS injections (
     state TEXT CHECK (state IS NULL OR state IN ('taken', 'missed')),
     updated_at TEXT NOT NULL,
     PRIMARY KEY (day, target)
+);
+CREATE TABLE IF NOT EXISTS meals (
+    day TEXT NOT NULL,
+    slot TEXT NOT NULL CHECK (slot IN ('breakfast', 'lunch', 'dinner')),
+    text TEXT,
+    calories_kcal INTEGER,
+    carbs_g REAL,
+    carbs_low_g REAL,
+    carbs_high_g REAL,
+    source TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (day, slot)
 );
 """
 
@@ -267,12 +282,14 @@ class MergeSummary:
     backup: Path | None
     injections_added: int = 0
     injections_updated: int = 0
+    meals_added: int = 0
+    meals_updated: int = 0
 
     @property
     def changed(self) -> bool:
         return bool(
             self.readings_added or self.markers_added or self.notes_added or self.notes_updated
-            or self.injections_added or self.injections_updated
+            or self.injections_added or self.injections_updated or self.meals_added or self.meals_updated
             or self.doses_added or self.protocol_versions_added or self.imports_added or self.patient_name_taken
         )
 
@@ -330,7 +347,9 @@ class Store:
                 self.migrations.append(self._migrate_to_v4(backup))
             if version < 5:
                 self.migrations.append(self._migrate_to_v5(backup))
-            self.migrations.append(self._migrate_to_v6(backup))
+            if version < 6:
+                self.migrations.append(self._migrate_to_v6(backup))
+            self.migrations.append(self._migrate_to_v7(backup))
 
     @property
     def last_migration(self) -> "Migration | None":
@@ -443,6 +462,15 @@ class Store:
             after = self._count()
         log.info("base migrée v5 -> v6 : journal des injections, sauvegarde %s", backup)
         return Migration(5, 6, before, after, 0, backup)
+
+    def _migrate_to_v7(self, backup: Path | None) -> "Migration":
+        """v6 -> v7 : journal alimentaire (table meals, créée par SCHEMA), vide au départ. Aucune ligne modifiée."""
+        with self.db:
+            before = self._count()
+            self.db.execute("UPDATE settings SET value = '7' WHERE key = 'schema_version'")
+            after = self._count()
+        log.info("base migrée v6 -> v7 : journal alimentaire, sauvegarde %s", backup)
+        return Migration(6, 7, before, after, 0, backup)
 
     def _add_columns(self, tables: dict[str, tuple[str, ...]]) -> None:
         for table, columns in tables.items():
@@ -649,6 +677,60 @@ class Store:
     def count_injections(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM injections WHERE state IS NOT NULL").fetchone()[0]
 
+    # Journal alimentaire
+
+    def set_meal(self, entry: MealEntry | None, *, day: date | None = None, slot: MealSlot | None = None) -> None:
+        """Enregistre le repas `entry` (texte et estimation). `None` avec `day` et `slot` efface le repas.
+
+        Effacer garde une ligne vide, datée, pour que la fusion avec un autre appareil propage l'effacement
+        (comme pour les injections).
+        """
+        now = datetime.now().replace(microsecond=0).isoformat()
+        if entry is None:
+            if day is None or slot is None:
+                raise ValueError("effacer un repas demande son jour et son repas")
+            values = (day.isoformat(), MealSlot(slot).value, None, None, None, None, None, None, now)
+        else:
+            text = entry.text.strip()
+            if not text:
+                raise ValueError("un repas sans texte ne s'enregistre pas : effacez-le")
+            if len(text) > MEAL_TEXT_MAX_CHARS:
+                raise ValueError(f"le repas dépasse {MEAL_TEXT_MAX_CHARS} caractères")
+            values = (
+                entry.day.isoformat(), MealSlot(entry.slot).value, text, entry.calories_kcal, entry.carbs_g,
+                entry.carbs_low_g, entry.carbs_high_g, entry.source, now,
+            )
+        with self.db:
+            self.db.execute(
+                "INSERT INTO meals (day, slot, text, calories_kcal, carbs_g, carbs_low_g, carbs_high_g, source, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT (day, slot) DO UPDATE SET text = excluded.text, calories_kcal = excluded.calories_kcal,"
+                " carbs_g = excluded.carbs_g, carbs_low_g = excluded.carbs_low_g, carbs_high_g = excluded.carbs_high_g,"
+                " source = excluded.source, updated_at = excluded.updated_at",
+                values,
+            )
+
+    def meals(self, since: date | None = None, until: date | None = None) -> list[MealEntry]:
+        """Repas renseignés, du `since` (inclus) au `until` (exclu), dans l'ordre : jour, puis matin, midi, soir."""
+        query = (
+            "SELECT day, slot, text, calories_kcal, carbs_g, carbs_low_g, carbs_high_g, source FROM meals"
+            " WHERE text IS NOT NULL"
+        )
+        args: list[str] = []
+        if since is not None:
+            query += " AND day >= ?"
+            args.append(since.isoformat())
+        if until is not None:
+            query += " AND day < ?"
+            args.append(until.isoformat())
+        order = {slot.value: i for i, slot in enumerate(MealSlot)}
+        rows = self.db.execute(query, args).fetchall()
+        rows.sort(key=lambda row: (row[0], order[row[1]]))
+        return [MealEntry(date.fromisoformat(r[0]), MealSlot(r[1]), r[2], r[3], r[4], r[5], r[6], r[7]) for r in rows]
+
+    def count_meals(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM meals WHERE text IS NOT NULL").fetchone()[0]
+
     def last_import(self) -> ImportSummary | None:
         row = self.db.execute(
             "SELECT source, received, added, rejected, at, markers_added, meter_serial, clock_offset_s, clock_action,"
@@ -819,9 +901,9 @@ class Store:
         self._prune_backups("avant-fusion", MERGE_BACKUPS_KEPT)
         log.info(
             "fusion de %s : %s mesures, %s marqueurs, %s notes ajoutées et %s mises à jour, %s injections ajoutées "
-            "et %s mises à jour, %s doses, %s versions du protocole (protocole en cours %s), %s alertes, sauvegarde %s",
+            "et %s mises à jour, %s repas ajoutés et %s mis à jour, %s doses, %s versions du protocole (protocole en cours %s), %s alertes, sauvegarde %s",
             summary.source, summary.readings_added, summary.markers_added, summary.notes_added, summary.notes_updated,
-            summary.injections_added, summary.injections_updated, summary.doses_added, summary.protocol_versions_added, "changé" if summary.protocol_changed else "inchangé",
+            summary.injections_added, summary.injections_updated, summary.meals_added, summary.meals_updated, summary.doses_added, summary.protocol_versions_added, "changé" if summary.protocol_changed else "inchangé",
             len(summary.warnings), summary.backup,
         )
         return summary
@@ -934,6 +1016,31 @@ class Store:
                 else:
                     injections_updated += 1
 
+            meals_added = meals_updated = 0
+            meal_columns = "day, slot, text, calories_kcal, carbs_g, carbs_low_g, carbs_high_g, source, updated_at"
+            for row in other.db.execute(f"SELECT {meal_columns} FROM meals").fetchall():
+                mine = self.db.execute(
+                    "SELECT updated_at, text, carbs_g, calories_kcal FROM meals WHERE day = ? AND slot = ?", row[:2]
+                ).fetchone()
+                # même seconde sur les deux appareils : départage fixe sur le contenu (vide en dernier)
+                if mine is not None and (mine[0], mine[1] or "", mine[2] or 0, mine[3] or 0) >= (
+                    row[8], row[2] or "", row[4] or 0, row[3] or 0
+                ):
+                    continue
+                if mine is None and row[2] is None:
+                    continue
+                self.db.execute(
+                    f"INSERT INTO meals ({meal_columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT (day, slot) DO UPDATE SET text = excluded.text, calories_kcal = excluded.calories_kcal,"
+                    " carbs_g = excluded.carbs_g, carbs_low_g = excluded.carbs_low_g, carbs_high_g = excluded.carbs_high_g,"
+                    " source = excluded.source, updated_at = excluded.updated_at",
+                    row,
+                )
+                if mine is None:
+                    meals_added += 1
+                else:
+                    meals_updated += 1
+
             columns = "effective, morning_ui, evening_ui, rule, evidence, note, created_at, excluded"
             mine_doses = {tuple(r) for r in self.db.execute("SELECT effective, morning_ui, evening_ui, rule FROM dose_changes")}
             theirs = other.db.execute(f"SELECT {columns} FROM dose_changes ORDER BY effective, id").fetchall()
@@ -998,5 +1105,5 @@ class Store:
         return MergeSummary(
             name, readings_added, markers_added, notes_added, notes_updated, len(new_doses), len(new_versions),
             protocol_changed, len(new_imports), patient_name_taken, tuple(warnings), backup,
-            injections_added, injections_updated,
+            injections_added, injections_updated, meals_added, meals_updated,
         )
