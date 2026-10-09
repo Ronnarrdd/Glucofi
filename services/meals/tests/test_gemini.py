@@ -4,7 +4,7 @@ import urllib.error
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from services.meals import MODEL_CHAIN, API_KEY_VARIABLE, EstimateError, NotAMealError, estimate_meal, load_api_key, parse_estimate
+from services.meals import MODEL_CHAIN, API_KEY_VARIABLE, EstimateError, NotAMealError, estimate_meal, env_file_candidates, load_api_key, parse_estimate
 from services.meals.gemini import ENDPOINT, request_body
 
 KEY = "cle-de-test"
@@ -172,6 +172,15 @@ class LoadApiKeyTest(unittest.TestCase):
             first, second = Path(tmp) / "a.env", Path(tmp) / "b.env"
             second.write_text(f"{API_KEY_VARIABLE}=deux\n")
             self.assertEqual(load_api_key({}, (Path(tmp) / "absent.env", first, second)), "deux")
+
+    def test_installed_copy_finds_the_repo_env_through_glucofi_src(self):
+        with TemporaryDirectory() as tmp:
+            (Path(tmp) / ".env").write_text(f"{API_KEY_VARIABLE}=du-depot\n")
+            files = env_file_candidates({"GLUCOFI_SRC": tmp})
+            self.assertIn(Path(tmp) / ".env", files)
+            self.assertEqual(load_api_key({}, tuple(f for f in files if f.parent == Path(tmp))), "du-depot")
+        self.assertNotIn(Path("/nonexistent/.env"), env_file_candidates({}))
+        self.assertEqual(len(env_file_candidates({})), 2)
 
     def test_no_key_is_none(self):
         with TemporaryDirectory() as tmp:

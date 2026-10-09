@@ -25,6 +25,7 @@ from contracts import MEAL_TEXT_MAX_CHARS
 log = logging.getLogger("glucofi.meals")
 
 API_KEY_VARIABLE = "GEMINI_API_KEY"
+SOURCE_VARIABLE = "GLUCOFI_SRC"
 # Plan gratuit : le quota est de 20 requêtes par jour ET PAR MODÈLE. On essaie les modèles dans l'ordre, et on passe
 # au suivant quand le quota d'un est atteint (429) ou qu'un modèle a été retiré (404) : trois repas par jour n'épuisent
 # jamais la chaîne. « latest » suit le dernier Flash ; Flash-Lite est le filet de sécurité, moins précis.
@@ -102,19 +103,30 @@ class MealEstimate:
 Transport = Callable[[str, Mapping[str, str], bytes, float], "tuple[int, bytes]"]
 
 
+def env_file_candidates(environ: Mapping[str, str] | None = None) -> tuple[Path, ...]:
+    from services.store import default_data_dir
+
+    environ = os.environ if environ is None else environ
+    files = [Path(__file__).resolve().parents[2] / ".env"]
+    if environ.get(SOURCE_VARIABLE):
+        files.append(Path(environ[SOURCE_VARIABLE]).expanduser() / ".env")
+    files.append(default_data_dir() / ".env")
+    return tuple(files)
+
+
 def load_api_key(environ: Mapping[str, str] | None = None, env_files: tuple[Path, ...] | None = None) -> str | None:
     """Clé API Gemini : variable d'environnement GEMINI_API_KEY, sinon fichier `.env` (jamais suivi par git).
 
-    Fichiers cherchés, dans l'ordre : `.env` à la racine du projet, puis `.env` du dossier de données de Glucofi.
+    Fichiers cherchés, dans l'ordre : `.env` à la racine du projet, `.env` du dépôt d'où Glucofi a été installé
+    (variable GLUCOFI_SRC, posée par le lanceur de install.sh : la copie installée vit dans ~/.local/lib/glucofi,
+    loin du dépôt), puis `.env` du dossier de données de Glucofi.
     """
     environ = os.environ if environ is None else environ
     key = (environ.get(API_KEY_VARIABLE) or "").strip()
     if key:
         return key
     if env_files is None:
-        from services.store import default_data_dir
-
-        env_files = (Path(__file__).resolve().parents[2] / ".env", default_data_dir() / ".env")
+        env_files = env_file_candidates(environ)
     for path in env_files:
         try:
             lines = path.read_text(encoding="utf-8").splitlines()

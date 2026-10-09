@@ -7,6 +7,8 @@ from services.meals.gemini import (
     MealEstimate,
     NotAMealError,
     estimate_meal,
+    SOURCE_VARIABLE,
+    env_file_candidates,
     load_api_key,
     parse_estimate,
 )
@@ -20,6 +22,8 @@ __all__ = [
     "MealEstimate",
     "NotAMealError",
     "estimate_meal",
+    "SOURCE_VARIABLE",
+    "env_file_candidates",
     "load_api_key",
     "parse_estimate",
 ]

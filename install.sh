@@ -21,6 +21,7 @@ find "$LIB" -type d -name tests -prune -exec rm -rf {} +
 
 cat > "$BIN/glucofi" <<EOF
 #!/bin/sh
+export GLUCOFI_SRC="$SRC"
 export PYTHONPATH="$LIB\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m app "\$@"
 EOF

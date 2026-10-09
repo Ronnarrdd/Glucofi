@@ -14,7 +14,7 @@ from app.components import Notice, Page, Section, clear, describe, divider, labe
 from app.dialogs import meal_dialog
 from app.meals import DISCLAIMER, INTRO, MealCell, MealDay, meals_view
 from app.state import AppState
-from services.meals import load_api_key
+from services.meals import env_file_candidates, load_api_key
 
 
 class MealsPage:
@@ -37,7 +37,8 @@ class MealsPage:
         if not load_api_key():
             self.body.append(Notice(
                 "Pas de clé Gemini : les repas s'enregistrent, mais l'estimation est impossible. Ajoutez "
-                "GEMINI_API_KEY=... dans le fichier .env (clé gratuite sur aistudio.google.com/apikey).", "warning",
+                "GEMINI_API_KEY=... dans un de ces fichiers .env : " + ", ".join(str(f) for f in env_file_candidates()) +
+                " (clé gratuite sur aistudio.google.com/apikey). Relancez Glucofi après l'ajout.", "warning",
             ))
         for day in meals_view(self.state).days:
             self.body.append(self._day(day))
