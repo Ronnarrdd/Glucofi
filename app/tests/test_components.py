@@ -59,6 +59,17 @@ class ComponentsTest(unittest.TestCase):
         self.assertTrue(bottom.has_css_class("compact"))
         self.assertEqual(bottom.buttons["a"].get_child().get_orientation(), Gtk.Orientation.VERTICAL)
 
+    def test_clicking_a_tab_leaves_only_that_tab_highlighted(self):
+        from app.components import NavBar
+
+        stack = self.stack()
+        top, bottom = NavBar(stack, PAGES), NavBar(stack, PAGES, compact=True)
+        for target in ("b", "a", "b"):
+            top.buttons[target].set_active(True)
+            self.assertEqual(stack.get_visible_child_name(), target)
+            for nav in (top, bottom):
+                self.assertEqual([n for n, b in nav.buttons.items() if b.get_active()], [target])
+
     def test_filter_chips_are_exclusive_with_a_checkmark(self):
         from app.components import FilterChips
 

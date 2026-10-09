@@ -378,6 +378,7 @@ class NavBar(Gtk.Box):
         self.add_css_class("navbar")
         self.stack = stack
         self._compact = compact
+        self._syncing = False
         self.buttons: dict[str, Gtk.ToggleButton] = {}
         self._icons: dict[str, tuple[Gtk.Image, str, str]] = {}
         first = None
@@ -415,13 +416,20 @@ class NavBar(Gtk.Box):
 
     def _follow(self) -> None:
         current = self.stack.get_visible_child_name()
-        for name, item in self.buttons.items():
-            if (name == current) != item.get_active() and name == current:
-                item.set_active(True)
+        self._syncing = True
+        try:
+            for name, item in self.buttons.items():
+                if (name == current) != item.get_active():
+                    item.set_active(name == current)
+        finally:
+            self._syncing = False
+        for name in self.buttons:
             image, icon, icon_active = self._icons[name]
             image.set_from_icon_name(icon_active if name == current else icon)
 
     def _toggled(self, item: Gtk.ToggleButton, name: str) -> None:
-        if item.get_active() and self.stack.get_visible_child_name() != name:
+        if self._syncing or not item.get_active():
+            return
+        if self.stack.get_visible_child_name() != name:
             self.stack.set_visible_child_name(name)
         self._follow()
