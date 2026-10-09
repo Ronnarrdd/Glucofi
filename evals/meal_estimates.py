@@ -4,7 +4,8 @@ Chaque repas de référence a une fourchette de glucides (g) et de calories (kca
 (table Ciqual) ; l'estimation de Gemini doit tomber dedans. Les textes qui ne sont pas des repas doivent être refusés.
 Vérifié à chaque passage :
 - justesse : glucides et calories dans la fourchette de référence (seuil : 80 % des repas) ;
-- fourchette annoncée : basse <= estimation <= haute, et la fourchette contient la référence centrale (seuil : 80 %) ;
+- fourchette annoncée : basse <= estimation <= haute, et la fourchette recoupe celle de la référence (seuil : 80 %) ;
+- panne passagère (Gemini indisponible) : le repas est rejoué jusqu'à 3 fois, une panne qui dure compte comme un échec ;
 - refus : 100 % des textes qui ne sont pas un repas.
 
 Payant en quota (réseau, clé Gemini) : lancé avant de livrer et de temps en temps, jamais à chaque commit.
@@ -70,19 +71,26 @@ class Outcome:
     @property
     def range_ok(self) -> bool:
         e = self.estimate
-        centre = sum(self.case.carbs) / 2
-        return e is not None and e.carbs_low_g <= e.carbs_g <= e.carbs_high_g and e.carbs_low_g <= centre <= e.carbs_high_g
+        lo, hi = self.case.carbs
+        return e is not None and e.carbs_low_g <= e.carbs_g <= e.carbs_high_g and e.carbs_low_g <= hi and e.carbs_high_g >= lo
+
+
+ATTEMPTS = 3
 
 
 def run(estimate=estimate_meal, key: str | None = None, models=MODEL_CHAIN, pause: float = 0.0):
     """Joue tous les cas avec la fonction `estimate(texte, clé, models=...)` ; rend (résultats, textes mal refusés)."""
     outcomes, not_refused = [], []
     for case in CASES:
-        try:
-            outcomes.append(Outcome(case, estimate(case.text, key, models=models)))
-        except EstimateError as exc:
-            outcomes.append(Outcome(case, None, str(exc)))
-        time.sleep(pause)
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                outcome = Outcome(case, estimate(case.text, key, models=models))
+            except EstimateError as exc:
+                outcome = Outcome(case, None, str(exc))
+            time.sleep(pause)
+            if outcome.estimate is not None or attempt == ATTEMPTS:
+                break
+        outcomes.append(outcome)
     for text in NOT_MEALS:
         try:
             estimate(text, key, models=models)

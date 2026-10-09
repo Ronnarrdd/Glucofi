@@ -56,6 +56,19 @@ class MealEvalSmokeTest(unittest.TestCase):
         _, not_refused = run(offline)
         self.assertEqual(sorted(not_refused), sorted(NOT_MEALS))
 
+    def test_a_passing_outage_is_replayed_but_a_lasting_one_is_a_miss(self):
+        calls = {}
+
+        def flaky(text, key, models=None):
+            calls[text] = calls.get(text, 0) + 1
+            if calls[text] < 3 and text in {c.text for c in CASES}:
+                raise EstimateError("Gemini est indisponible (erreur 503)")
+            return oracle(text, key)
+
+        rates, ok = verdict(*run(flaky))
+        self.assertTrue(ok, rates)
+        self.assertTrue(all(calls[c.text] == 3 for c in CASES))
+
     def test_errors_count_as_misses(self):
         def broken(text, key, models=None):
             raise EstimateError("hors ligne")
