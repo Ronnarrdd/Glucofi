@@ -236,6 +236,7 @@ class AppState:
             patient_name=self.patient_name,
             proposal=self.proposal(),
             injections=self.injections(),
+            meals=self.meals(since.date(), until.date()),
             generated_at=self._now(),
             protocol=protocol_sections(self.settings),
             protocol_history=[

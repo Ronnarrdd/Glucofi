@@ -27,6 +27,7 @@ from reportlab.platypus import (
 from contracts import (
     count_fr,
     MEAL_LABELS_FR,
+    MEAL_SLOT_LABELS_FR,
     NOTE_TAG_LABELS_FR,
     RULE_LABELS_FR,
     AlertLevel,
@@ -35,6 +36,7 @@ from contracts import (
     DoseTarget,
     DosingSettings,
     Injection,
+    MealEntry,
     NoteTag,
     Reading,
 )
@@ -63,6 +65,7 @@ DISCLAIMER = (
 CONTENT_WIDTH = A4[0] - 3 * cm
 HEADER_BG = colors.HexColor("#3584e4")
 ROW_ALT = colors.HexColor("#f2f6fc")
+MEAL_BG = colors.HexColor("#e8f3e4")
 LOW_BG = colors.HexColor("#fbd5d7")
 HIGH_BG = colors.HexColor("#ffe3c7")
 DAYS_FR = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
@@ -89,6 +92,8 @@ class ReportInput:
     protocol_history: Sequence[tuple[str, Sequence[str]]] = ()
     # journal des injections (doses déclarées prises ou non prises) ; vide si le journal n'a pas servi
     injections: Sequence[Injection] = ()
+    # journal alimentaire : affiché dans le détail des mesures, une ligne par jour (pas de tableau à part)
+    meals: Sequence[MealEntry] = ()
 
 
 def _styles():
@@ -217,6 +222,37 @@ def notes_summary(readings: Sequence[Reading], settings: DosingSettings) -> str:
     return text
 
 
+def _fmt_number(value: float) -> str:
+    return f"{value:.1f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _fmt_kcal(kcal: int) -> str:
+    return f"{kcal:,}".replace(",", " ") + " kcal"
+
+
+def _meal_figures(entry: MealEntry) -> str:
+    """« 96 g de glucides, 660 kcal » ; vide tant que le repas n'est pas estimé."""
+    if not entry.estimated:
+        return ""
+    return f"{_fmt_number(entry.carbs_g)} g de glucides, {_fmt_kcal(entry.calories_kcal)}"
+
+
+def meals_line(day_meals: Sequence[MealEntry]) -> str:
+    """Ligne d'un jour : « Repas - Matin : pain (45 g de glucides, 420 kcal) ; Midi : pâtes. Total estimé : ... »
+    (balisage reportlab, texte saisi échappé)."""
+    parts = []
+    for m in day_meals:
+        figures = _meal_figures(m)
+        parts.append(f"<b>{MEAL_SLOT_LABELS_FR[m.slot]}</b> : {escape(m.text)}" + (f" <i>({figures})</i>" if figures else ""))
+    text = "<b>Repas</b> - " + " ; ".join(parts) + "."
+    estimated = [m for m in day_meals if m.estimated]
+    if len(estimated) > 1:
+        carbs = sum(m.carbs_g for m in estimated)
+        kcal = sum(m.calories_kcal for m in estimated)
+        text += f" <i>Total estimé : {_fmt_number(carbs)} g de glucides, {_fmt_kcal(kcal)}.</i>"
+    return text
+
+
 def _dose_details(change: DoseChange) -> str:
     details = "<br/>".join(map(escape, change.evidence)) or escape(change.note or "-")
     if change.excluded:
@@ -313,7 +349,8 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
 
     story.append(PageBreak())
     story.append(Paragraph("Détail des mesures", st["h2"]))
-    if period:
+    day_meals = [m for m in data.meals if data.since.date() <= m.day < data.until.date()]
+    if period or day_meals:
         missed = missed_doses(data.injections)
         notes = " ".join(part for part in (notes_summary(period, settings), missed_summary(period, settings, missed)) if part)
         if notes:
@@ -325,20 +362,38 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
         low, high = round(settings.low_g_l * 100), round(settings.high_g_l * 100)
         rows = [["Date", "Heure", "Glycémie", "mg/dL", "Moment", "Marqueur", "Réf.", "Note"]]
         extra = []
-        for i, r in enumerate(sorted(period, reverse=True), start=1):
-            rows.append([
-                f"{DAYS_FR[r.device_time.weekday()]} {r.device_time:%d/%m/%Y}", f"{r.device_time:%H:%M}", fmt_g_l(r.mg_dl), fmt_mg_dl(r.mg_dl),
-                period_of(r, settings), MEAL_LABELS_FR[r.meal] if r.meal is not None else "",
-                morning_status(r, morning_keys, settings, missed),
-                Paragraph(escape(r.note.summary), st["small"]) if r.note is not None and r.note.summary else "",
-            ])
-            if r.mg_dl < low:
-                extra.append(("BACKGROUND", (2, i), (3, i), LOW_BG))
-            elif r.mg_dl > high:
-                extra.append(("BACKGROUND", (2, i), (3, i), HIGH_BG))
+        meals_by_day: dict[date, list[MealEntry]] = {}
+        for m in data.meals:
+            if data.since.date() <= m.day < data.until.date():
+                meals_by_day.setdefault(m.day, []).append(m)
+        readings_desc = sorted(period, reverse=True)
+        days = sorted({r.device_time.date() for r in readings_desc} | set(meals_by_day), reverse=True)
+        for day in days:
+            if day in meals_by_day:
+                rows.append([Paragraph(meals_line(meals_by_day[day]), st["small"]), "", "", "", "", "", "", ""])
+                extra += [("SPAN", (0, len(rows) - 1), (-1, len(rows) - 1)), ("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1), MEAL_BG),
+                          ("ALIGN", (0, len(rows) - 1), (-1, len(rows) - 1), "LEFT")]
+            for r in (r for r in readings_desc if r.device_time.date() == day):
+                i = len(rows)
+                rows.append([
+                    f"{DAYS_FR[r.device_time.weekday()]} {r.device_time:%d/%m/%Y}", f"{r.device_time:%H:%M}", fmt_g_l(r.mg_dl), fmt_mg_dl(r.mg_dl),
+                    period_of(r, settings), MEAL_LABELS_FR[r.meal] if r.meal is not None else "",
+                    morning_status(r, morning_keys, settings, missed),
+                    Paragraph(escape(r.note.summary), st["small"]) if r.note is not None and r.note.summary else "",
+                ])
+                if r.mg_dl < low:
+                    extra.append(("BACKGROUND", (2, i), (3, i), LOW_BG))
+                elif r.mg_dl > high:
+                    extra.append(("BACKGROUND", (2, i), (3, i), HIGH_BG))
         widths = [2.6 * cm, 1.1 * cm, 2.3 * cm, 1.8 * cm, 1.9 * cm, 2.4 * cm, 1.5 * cm, 4.4 * cm]
         story.append(_table(rows, widths, extra + [("ALIGN", (7, 1), (7, -1), "LEFT")]))
         story.append(Paragraph(MORNING_LEGEND, st["small"]))
+        if day_meals:
+            story.append(Paragraph(
+                "Repas : texte saisi dans le journal alimentaire ; glucides et calories estimés par Gemini ou corrigés à la main. "
+                "Estimations indicatives, à ne pas utiliser seules pour calculer une dose.",
+                st["small"],
+            ))
     else:
         story.append(Paragraph("Aucune mesure sur la période.", st["body"]))
 

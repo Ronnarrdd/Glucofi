@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from contracts import DoseChange, DoseRule, DosingSettings, NoteTag, Reading, ReadingNote
+from contracts import DoseChange, DoseRule, DosingSettings, MealEntry, MealSlot, NoteTag, Reading, ReadingNote
 
 HAS_DEPS = all(importlib.util.find_spec(m) for m in ("matplotlib", "reportlab"))
 
@@ -256,3 +256,65 @@ class InjectionsInTheReportTest(unittest.TestCase):
         self.assertIn("1 glycémie du matin écartée après une dose du soir non prise de l'ajustement.", flat)
         self.assertIn("écartée", flat)
         self.assertIn("ou parce que la dose qui précède est déclarée non prise", flat)
+
+
+class MealsInReportTest(unittest.TestCase):
+    SETTINGS = DosingSettings(insulin="Insuline test", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3)
+
+    def line(self, meals):
+        from services.report.pdf import meals_line
+
+        return meals_line(meals)
+
+    def test_line_shows_text_and_estimate_and_escapes(self):
+        m = MealEntry(date(2026, 9, 2), MealSlot.LUNCH, "pâtes & <sauce>", 660, 96.0, 85.0, 110.0, "gemini")
+        out = self.line([m])
+        self.assertIn("<b>Midi</b> : pâtes &amp; &lt;sauce&gt;", out)
+        self.assertIn("96 g de glucides, 660 kcal", out)
+        self.assertNotIn("Total", out)
+
+    def test_line_without_estimate_and_with_total(self):
+        a = MealEntry(date(2026, 9, 2), MealSlot.BREAKFAST, "pain", 420, 45.5, source="manual")
+        b = MealEntry(date(2026, 9, 2), MealSlot.LUNCH, "salade")
+        c = MealEntry(date(2026, 9, 2), MealSlot.DINNER, "riz", 1100, 54.5, source="manual")
+        out = self.line([a, b, c])
+        self.assertIn("<b>Midi</b> : salade ;", out)
+        self.assertIn("Total estimé : 100 g de glucides, 1 520 kcal", out)
+
+    @unittest.skipUnless(HAS_DEPS, "matplotlib ou reportlab absent")
+    def test_meals_are_in_the_measure_detail_without_a_new_table(self):
+        from services.report.pdf import ReportInput, build_report
+
+        t = datetime(2026, 9, 2, 8)
+        readings = [Reading(t, 120, int(t.timestamp()))]
+        meals = [
+            MealEntry(date(2026, 9, 2), MealSlot.BREAKFAST, "tartines beurre", 420, 45.0, source="manual"),
+            MealEntry(date(2026, 9, 4), MealSlot.DINNER, "soupe de légumes", 180, 20.0, source="manual"),  # jour sans mesure
+            MealEntry(date(2026, 8, 20), MealSlot.LUNCH, "hors période", 500, 50.0, source="manual"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = build_report(
+                ReportInput(readings, [], self.SETTINGS, datetime(2026, 9, 1), datetime(2026, 9, 6), "Jean", meals=meals),
+                Path(tmp) / "rapport.pdf",
+                dpi=40,
+            )
+            if shutil.which("pdftotext") is None:
+                self.skipTest("pdftotext absent : texte du rapport non vérifié")
+            flat = " ".join(subprocess.run(["pdftotext", str(out), "-"], capture_output=True, text=True, check=True).stdout.split())
+        self.assertIn("tartines beurre", flat)
+        self.assertIn("soupe de légumes", flat)
+        self.assertIn("45 g de glucides, 420 kcal", flat)
+        self.assertNotIn("hors période", flat)
+        self.assertLess(flat.index("soupe de légumes"), flat.index("tartines beurre"))  # plus récent d'abord
+
+    @unittest.skipUnless(HAS_DEPS, "matplotlib ou reportlab absent")
+    def test_meals_only_period_still_builds(self):
+        from services.report.pdf import ReportInput, build_report
+
+        meals = [MealEntry(date(2026, 9, 2), MealSlot.LUNCH, "pâtes", 660, 96.0, source="manual")]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = build_report(
+                ReportInput([], [], self.SETTINGS, datetime(2026, 9, 1), datetime(2026, 9, 6), meals=meals),
+                Path(tmp) / "r.pdf", dpi=40,
+            )
+            self.assertTrue(out.read_bytes().startswith(b"%PDF-"))
