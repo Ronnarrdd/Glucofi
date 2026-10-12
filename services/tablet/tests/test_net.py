@@ -57,6 +57,32 @@ class SecureTest(unittest.TestCase):
                 secure.unpack(bad)
 
 
+class WithoutCryptographyTest(unittest.TestCase):
+    """python3-cryptography manque : Glucofi démarre et le câble marche ; seul le Wi-Fi le dit."""
+
+    def test_package_imports_and_wifi_explains(self):
+        import importlib
+        import sys
+
+        blocked = {name: None for name in ("cryptography", "cryptography.exceptions", "cryptography.hazmat.primitives",
+                                           "cryptography.hazmat.primitives.ciphers.aead", "cryptography.hazmat.primitives.kdf.hkdf")}
+        fresh = {n: m for n, m in sys.modules.items() if n.startswith("services.tablet")}
+        for name in fresh:
+            del sys.modules[name]
+        try:
+            from unittest import mock
+
+            with mock.patch.dict(sys.modules, blocked):
+                tablet = importlib.import_module("services.tablet")
+                pairing = tablet.Pairing("00" * 10, "127.0.0.1", 9)
+                with self.assertRaisesRegex(tablet.TabletError, "python3-cryptography"):
+                    tablet.NetLink(pairing).hello()
+        finally:
+            for name in [n for n in sys.modules if n.startswith("services.tablet")]:
+                del sys.modules[name]
+            sys.modules.update(fresh)
+
+
 class NetSyncTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()

@@ -7,11 +7,6 @@ import json
 import os
 import struct
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-
 from contracts.tablet_sync import NET_INFO, NET_NONCE_BYTES, NET_SALT, NET_SECRET_BYTES
 
 
@@ -42,6 +37,10 @@ def parse_code(text: str) -> bytes:
 
 
 def derive_key(secret: bytes) -> bytes:
+    # python3-cryptography n'est importé qu'ici : sans lui, seul le Wi-Fi manque (ImportError), pas le reste de Glucofi
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
     return HKDF(algorithm=hashes.SHA256(), length=32, salt=NET_SALT, info=NET_INFO).derive(secret)
 
 
@@ -50,11 +49,16 @@ def _aad(challenge: bytes, method: str, direction: str) -> bytes:
 
 
 def seal(key: bytes, challenge: bytes, method: str, direction: str, frame: bytes, nonce: bytes | None = None) -> bytes:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
     nonce = nonce or os.urandom(NET_NONCE_BYTES)
     return nonce + AESGCM(key).encrypt(nonce, frame, _aad(challenge, method, direction))
 
 
 def unseal(key: bytes, challenge: bytes, method: str, direction: str, body: bytes) -> bytes:
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
     if len(body) <= NET_NONCE_BYTES:
         raise BadMessage("trop court")
     try:

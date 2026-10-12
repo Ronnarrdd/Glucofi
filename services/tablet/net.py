@@ -183,6 +183,13 @@ class NetLink:
     def call(self, method: str, blob: bytes = b"", timeout: float = CALL_TIMEOUT_S) -> tuple[TabletReply, bytes]:
         if method not in NET_METHODS:
             raise ValueError(method)
+        try:
+            key = self.pairing.key
+        except ImportError as exc:
+            raise TabletError(
+                "La synchronisation Wi-Fi demande le paquet python3-cryptography, absent de ce PC : installez-le, "
+                "ou synchronisez par le câble USB."
+            ) from exc
         status, body = self._request(urllib.request.Request(self._url(NET_CHALLENGE_PATH)), HELLO_TIMEOUT_S)
         if status == 429:
             raise TabletError(_LOCKED)
@@ -194,7 +201,6 @@ class NetLink:
             raise TabletError("Réponse illisible de la tablette.") from exc
         if len(challenge) != NET_CHALLENGE_BYTES:
             raise TabletError("Réponse illisible de la tablette.")
-        key = self.pairing.key
         request = urllib.request.Request(
             self._url(NET_CALL_PATH + method),
             data=secure.seal(key, challenge, method, "req", secure.pack({}, blob)),

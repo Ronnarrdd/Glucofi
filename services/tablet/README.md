@@ -20,7 +20,7 @@ Tests : `tests/test_sync.py` avec `tests/fake_tablet.py` (faux adb qui répond c
 - `NetLink` a la même forme que `TabletLink` (`device`, `fetch`, `send`) : `sync()` et la fenêtre ne voient pas la différence. `NetLink.connect` essaie l'adresse gardée, puis les tablettes annoncées ; la clé dit laquelle est la bonne.
 - `connect_link(dir, usb)` : Wi-Fi si un couplage existe, câble en secours ; si les deux échouent, le message dit pourquoi pour chacun. Sans couplage, une erreur USB rappelle le menu de couplage.
 - `secure.py` : HKDF-SHA256 du secret, AES-256-GCM, défi à usage unique de 16 octets lié à la méthode et au sens (requête ou réponse) dans les données authentifiées : un message rejoué, détourné ou retourné est refusé. Mauvaise clé : 403 sans détail ; 5 refus d'affilée : la tablette se tait une minute (429).
-- Dépendance : `python3-cryptography`, importée seulement par ce chemin (le câble n'en a pas besoin).
+- Dépendance : `python3-cryptography`, importée au premier chiffrement seulement : sans elle Glucofi démarre, le câble marche, et le Wi-Fi dit quoi installer.
 
 Limites : la tablette n'écoute que Glucofi ouverte (pas de service en arrière-plan) ; le réseau local doit laisser passer le port 47831 entre appareils (certains Wi-Fi invités isolent les appareils) ; les échanges sont chiffrés et authentifiés mais pas anonymes : qui est sur le réseau voit qu'un échange Glucofi a lieu, sans en lire le contenu.
 
