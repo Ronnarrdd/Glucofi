@@ -1,0 +1,11 @@
+{
+  "secret": "0102030405060708090a",
+  "code": "AEBA-GBAF-AYDQ-QCIK",
+  "key": "92c3c86a2254851a55c8e757969949e7693b291d0d8a1456ab170eb0fed9126a",
+  "challenge": "000102030405060708090a0b0c0d0e0f",
+  "method": "export",
+  "direction": "rep",
+  "frame": "0000000a7b2273796e63223a317d6261736500ff",
+  "nonce": "6465666768696a6b6c6d6e6f",
+  "sealed": "6465666768696a6b6c6d6e6fbb95a8bf62cb71cdf89cfed4995495dda3d07ed116e1202a09f003d02885100b69c9c1cc"
+}

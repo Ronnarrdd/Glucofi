@@ -23,6 +23,7 @@ from app.state import AppState, FormError, exclusion_option, parse_count
 from contracts import MEAL_TEXT_MAX_CHARS, NOTE_MAX_CHARS, NOTE_TAG_LABELS_FR, NoteTag, Reading, ReadingNote
 from services.meals import EstimateError, MealEstimate
 from services.dosing import fmt_g_l
+from services.tablet import TabletError, forget_pairing, load_pairing, pair
 
 MAX_UI = 80
 FORM_WIDTH = 600
@@ -232,6 +233,68 @@ def manual_dose_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[]
         state.manual_change(morning.value, evening.value, note.get_text().strip())
         dialog.close()
         on_done()
+
+    action.connect("clicked", on_click)
+    dialog.present(parent)
+
+
+def pairing_dialog(parent: Gtk.Widget, state: AppState, on_done: Callable[[str], None]) -> None:
+    """Couple ce PC à la tablette (code affiché par Glucofi sur la tablette) ou oublie le couplage existant."""
+    current = load_pairing(state.data_dir)
+    if current is not None:
+        group = form_group(
+            "Tablette couplée",
+            f"Dernière adresse connue : {current.host}. Ouvrez Glucofi sur la tablette (même Wi-Fi que ce PC) puis "
+            "« Synchroniser avec la tablette » : plus besoin de câble. Le câble USB reste le secours.",
+        )
+        action = button("Oublier ce couplage", kind="outlined", tall=True)
+        dialog, _column = _form_dialog("Tablette (Wi-Fi)", [group], action)
+
+        def forget(_btn):
+            forget_pairing(state.data_dir)
+            dialog.close()
+            on_done("Couplage oublié : la synchronisation repasse par le câble USB")
+
+        action.connect("clicked", forget)
+        dialog.present(parent)
+        return
+    group = form_group(
+        "Coupler la tablette",
+        "Sur la tablette : Glucofi > Protocole > « PC et tablette » > « Coupler un PC ». Elle affiche un code de "
+        "16 lettres et chiffres : saisissez-le ici. À faire une seule fois. Le PC cherche la tablette sur le réseau ; "
+        "si elle n'est pas trouvée, saisissez l'adresse que la tablette affiche.",
+    )
+    fields = form_group()
+    code = entry_row("Code de la tablette (ABCD-EFGH-IJKL-MNOP)")
+    address = entry_row("Adresse de la tablette (facultatif)")
+    fields.add(code)
+    fields.add(address)
+    error = _error_label()
+    action = button("Coupler", tall=True)
+    dialog, _column = _form_dialog("Tablette (Wi-Fi)", [group, fields, error], action)
+
+    def finish(result: object) -> bool:
+        action.set_sensitive(True)
+        if isinstance(result, TabletError):
+            error.set_label(str(result))
+            error.set_visible(True)
+        else:
+            dialog.close()
+            on_done("Tablette couplée : « Synchroniser avec la tablette » se fait maintenant sans câble")
+        return False
+
+    def run(code_text: str, address_text: str) -> None:
+        try:
+            pair(state.data_dir, code_text, address_text)
+        except TabletError as exc:
+            GLib.idle_add(finish, exc)
+        else:
+            GLib.idle_add(finish, True)
+
+    def on_click(_btn):
+        error.set_visible(False)
+        action.set_sensitive(False)
+        threading.Thread(target=run, args=(code.get_text(), address.get_text()), daemon=True).start()
 
     action.connect("clicked", on_click)
     dialog.present(parent)

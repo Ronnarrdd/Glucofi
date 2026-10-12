@@ -21,7 +21,7 @@ from app import theme
 from app.art import GlucofiMark
 from app.charts_page import CHART_PERIODS, HAS_MPL, ChartsPage
 from app.components import NavBar, label
-from app.dialogs import manual_dose_dialog, onboarding_dialog, preferences_dialog
+from app.dialogs import manual_dose_dialog, onboarding_dialog, pairing_dialog, preferences_dialog
 from app.doses_page import DosesPage
 from app.meals_page import MealsPage
 from app.measures_page import MeasuresPage
@@ -30,7 +30,7 @@ from app.today_page import TodayPage
 from contracts.tablet_sync import PC_FILE
 from services import device
 from services.store import MergeRefused
-from services.tablet import TabletError, TabletLink
+from services.tablet import NetLink, TabletError, TabletLink, connect_link, load_pairing
 from services.tablet import result as sync_result
 
 log = logging.getLogger("glucofi.ui")
@@ -83,7 +83,8 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append("Exporter en PDF…", "win.export")
         menu.append("Modifier la dose…", "win.manual-dose")
         sync = Gio.Menu()
-        sync.append("Synchroniser avec la tablette (USB)", "win.sync-tablet")
+        sync.append("Synchroniser avec la tablette", "win.sync-tablet")
+        sync.append("Coupler la tablette (Wi-Fi)…", "win.pair-tablet")
         sync.append("Exporter la base pour la tablette…", "win.export-db")
         sync.append("Fusionner une base Glucofi…", "win.merge-db")
         menu.append_section(None, sync)
@@ -99,7 +100,7 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_end(pdf_button)
         self.sync_button = Gtk.Button(
             icon_name="glucofi-tablet-symbolic",
-            tooltip_text="Synchroniser avec la tablette branchée en USB (dans les deux sens)",
+            tooltip_text="Synchroniser avec la tablette, par le Wi-Fi si elle est couplée, sinon en USB (dans les deux sens)",
             action_name="win.sync-tablet",
         )
         self.sync_button.update_property([Gtk.AccessibleProperty.LABEL], ["Synchroniser avec la tablette"])
@@ -154,6 +155,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("export", self.export_pdf),
             ("manual-dose", lambda: manual_dose_dialog(self, self.state, self.refresh)),
             ("sync-tablet", self.sync_tablet),
+            ("pair-tablet", lambda: pairing_dialog(self, self.state, self.toast)),
             ("export-db", self.export_db),
             ("merge-db", self.merge_db),
             ("preferences", self.show_preferences),
@@ -266,7 +268,10 @@ class MainWindow(Adw.ApplicationWindow):
         if self.busy:
             return
         self.set_busy(True)
-        self.toast("Synchronisation avec la tablette… Ne la débranchez pas.", timeout=3)
+        self.toast(
+            "Synchronisation avec la tablette…" if load_pairing(self.state.data_dir) else "Synchronisation avec la tablette… Ne la débranchez pas.",
+            timeout=3,
+        )
         workdir = Path(tempfile.mkdtemp(prefix="glucofi-tablette-"))
 
         def finish(error: str | None, done=None) -> bool:
@@ -281,7 +286,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         def fetch() -> None:
             try:
-                link = TabletLink.connect()
+                link = connect_link(self.state.data_dir, lambda: TabletLink.connect())
                 path = link.fetch(workdir)
             except TabletError as exc:
                 log.warning("synchronisation : %s", exc)
@@ -293,7 +298,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             GLib.idle_add(merge_here, link, path)
 
-        def merge_here(link: TabletLink, path: Path) -> bool:
+        def merge_here(link: TabletLink | NetLink, path: Path) -> bool:
             try:
                 summary = self.state.merge_db(path)
                 pc_db = self.state.export_db(workdir / PC_FILE)
@@ -304,7 +309,7 @@ class MainWindow(Adw.ApplicationWindow):
             threading.Thread(target=send, args=(link, summary, pc_db), daemon=True).start()
             return False
 
-        def send(link: TabletLink, summary, pc_db: Path) -> None:
+        def send(link: TabletLink | NetLink, summary, pc_db: Path) -> None:
             try:
                 reply = link.send(pc_db)
             except TabletError as exc:
