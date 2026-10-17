@@ -78,6 +78,14 @@ class MeasuresPageTest(unittest.TestCase):
         self.assertEqual(icons, [line.marker.icon for line in expected])
         self.assertTrue(all(r.has_css_class("list-row") for r in rows))
 
+    def test_a_plain_row_is_dense_and_keeps_time_before_context(self):
+        page, _state = self.make_page()
+        plain = next(r for r in self.rows(page) if len(texts(r)) == 3)  # heure, contexte, valeur : ni note ni étiquette
+        self.assertTrue(plain.has_css_class("dense"))
+        self.assertLessEqual(plain.measure(Gtk.Orientation.VERTICAL, 900)[0], 50, "une ligne simple : heure et contexte côte à côte")
+        first_line = next(w for w in descendants(plain) if isinstance(w, Gtk.Box) and w.get_orientation() == Gtk.Orientation.HORIZONTAL and len(texts(w)) == 2)
+        self.assertEqual(texts(first_line)[0].count(":"), 1, "l'heure d'abord")
+
     def test_app_icons_resolve_in_the_icon_theme(self):
         theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
         for name in MARKER_ICONS.values():

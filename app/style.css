@@ -245,6 +245,12 @@ button.list-row {
   font-weight: 500;
 }
 
+/* mesures : une ligne de 44 px (heure et contexte côte à côte), 56 px sinon */
+button.list-row.dense {
+  padding: 2px 8px;
+  min-height: 44px;
+}
+
 button.list-row:hover {
   background-color: var(--glucofi-surface-container-highest);
 }

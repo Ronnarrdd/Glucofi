@@ -199,7 +199,8 @@ class MeasuresPage:
 
     def _day_card(self, day: MeasureDay) -> Gtk.Widget:
         card = Section()
-        head = Gtk.Box(spacing=12, orientation=Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
+        card.set_spacing(4)  # lignes serrées ; l'en-tête du jour garde son air par sa marge
+        head = Gtk.Box(spacing=12, orientation=Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL, margin_bottom=8)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         titles.append(heading(day.title, "title-large"))
         titles.append(label(" · ".join(p for p in (day.detail, day.count_text) if p), "body-medium", "muted", xalign=0, wrap=True))
@@ -229,8 +230,11 @@ class MeasuresPage:
         icon.add_css_class("muted")
         row.append(icon)
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
-        texts.append(label(line.time, "body-large", "numeric", xalign=0))
-        texts.append(label(line.subtitle, "body-medium", "muted", xalign=0, wrap=True))
+        # heure et contexte sur une même ligne : une semaine de mesures tient dans l'écran
+        first = Gtk.Box(spacing=12)
+        first.append(label(line.time, "body-large", "numeric", xalign=0))
+        first.append(label(line.subtitle, "body-medium", "muted", xalign=0, wrap=True, hexpand=True, valign=Gtk.Align.CENTER))
+        texts.append(first)
         if line.note:
             texts.append(label(line.note, "body-medium", "muted", xalign=0, wrap=True))
         if line.excluded_why:
@@ -246,6 +250,7 @@ class MeasuresPage:
 
         widget = Gtk.Button(child=row, tooltip_text=line.note_tooltip)
         widget.add_css_class("list-row")
+        widget.add_css_class("dense")
         description = ", ".join(
             part for part in (
                 line.time, line.value, line.marker.label, line.level_label,
