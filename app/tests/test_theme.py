@@ -396,6 +396,11 @@ class ThemeClassesTest(unittest.TestCase):
         self.assertEqual(len(menus), 2, "moment et marqueur de Mesures")
         self.assertFalse([w for w in descendants(self.window) if isinstance(w, Adw.ToggleGroup)])
 
+    def test_curve_and_morning_charts_have_a_hover_tooltip(self):
+        self.window.charts.build()
+        pictures = [w for w in descendants(self.window.charts.widget) if isinstance(w, Gtk.Picture)]
+        self.assertEqual([p.get_has_tooltip() for p in pictures], [True, True, False], "courbe et matin survolables, pas la répartition")
+
     def test_charts_are_rebuilt_on_dark_switch(self):
         manager = Adw.StyleManager.get_default()
         scheme = manager.get_color_scheme()

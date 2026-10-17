@@ -1,7 +1,8 @@
 """Onglet Graphiques (propre au PC) : titre, puces de durée, cinq tuiles pastel, puis chaque graphique dans sa carte.
 
 Les graphiques sont des images matplotlib aux couleurs du thème (theme.chart_palette), refaites au passage
-clair/sombre et seulement quand l'onglet est visible : construire trois figures coûte une demi-seconde.
+clair/sombre et seulement quand l'onglet est visible : construire trois figures coûte une demi-seconde. Survoler un
+point de la courbe ou une barre du matin affiche la mesure (charts_data.chart_hits).
 """
 
 from __future__ import annotations
@@ -66,8 +67,23 @@ class ChartsPage:
             clear(self.body)
             self.body.append(Notice(f"Graphiques indisponibles : {exc}", "danger"))
 
+    @staticmethod
+    def _hover_tooltip(picture: Gtk.Picture, points: list, ratio: float) -> None:
+        """Infobulle de la mesure sous le pointeur : le graphique est une image, la position des points vient de matplotlib."""
+        from app.charts_data import image_rect, nearest_hit
+
+        def query(widget, x, y, _keyboard, tooltip) -> bool:
+            hit = nearest_hit(points, x, y, image_rect(widget.get_width(), widget.get_height(), ratio))
+            if hit is None:
+                return False
+            tooltip.set_text(hit.text)
+            return True
+
+        picture.set_has_tooltip(True)
+        picture.connect("query-tooltip", query)
+
     def _fill(self) -> None:
-        from app.charts_data import chart_data, chart_figures
+        from app.charts_data import chart_data, chart_figures, chart_hits
         from services.charts.figures import figure_png
 
         data = chart_data(self.state, int(self.days))
@@ -85,12 +101,17 @@ class ChartsPage:
 
         theme.register_chart_fonts()
         palette = theme.chart_palette(Adw.StyleManager.get_default().get_dark())
-        for title, fig in chart_figures(data, palette):
-            texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(figure_png(fig, dpi=CHART_DPI)))
+        figures = chart_figures(data, palette)
+        pngs = [figure_png(fig, dpi=CHART_DPI) for _title, fig in figures]
+        hits = chart_hits(data, figures)  # après le rendu : la mise en page des axes est alors fixée
+        for (title, fig), png, points in zip(figures, pngs, hits):
+            texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(png))
             picture = Gtk.Picture(paintable=texture, content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True)
             picture.set_alternative_text(title)
             fig_w, fig_h = fig.get_size_inches()
             picture.set_size_request(-1, round(CHART_WIDTH_PX * fig_h / fig_w))
+            if points:
+                self._hover_tooltip(picture, points, fig_w / fig_h)
             section = Section(title)
             section.append(picture)
             self.body.append(section)
