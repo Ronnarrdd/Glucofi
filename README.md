@@ -24,8 +24,8 @@ Application GTK4 / libadwaita pour Linux (Gnome) :
   <img src="docs/screenshots/aujourdhui-sombre.png" width="40%" alt="Onglet Aujourd'hui en thème sombre">
 </p>
 <p align="center">
-  <img src="docs/screenshots/mesures.png" width="32%" alt="Onglet Mesures : filtres en pilules, tuiles de synthèse, répartition et mesures du jour avec leur marqueur">
-  <img src="docs/screenshots/graphiques.png" width="32%" alt="Onglet Graphiques : courbe et glycémies du matin">
+  <img src="docs/screenshots/mesures.png" width="32%" alt="Onglet Mesures : durée en pilules, moment et marqueur en menus, tuiles de synthèse, répartition et mesures du jour avec leur marqueur">
+  <img src="docs/screenshots/graphiques.png" width="32%" alt="Onglet Graphiques : courbe et glycémies du matin, avec la mesure en infobulle au survol">
   <img src="docs/screenshots/premier-lancement.png" width="32%" alt="Premier lancement : bannière de bienvenue et protocole à recopier depuis l'ordonnance">
 </p>
 <p align="center">
@@ -102,7 +102,7 @@ Si Glucofi affiche « Accès USB au lecteur refusé », débrancher et rebranche
 1. Premier lancement : nom du patient, protocole de l'ordonnance, date de début et doses de départ.
 2. Brancher le lecteur (la pastille de la bannière passe à « Lecteur branché »), cliquer **Récupérer les mesures** dans la bannière d'Aujourd'hui (ou menu, ou Ctrl+R). Les nouvelles mesures sont ajoutées (les doublons sont ignorés) avec leur marqueur repas, et une copie brute de chaque lecture est gardée dans `~/.local/share/glucofi/raw/`. Si l'horloge du lecteur s'écarte de plus de 60 s de celle du PC et que l'heure du PC est synchronisée (NTP), le lecteur est remis à l'heure. Un message signale une lecture incomplète, des marqueurs sans mesure ou une horloge qui n'a pas pu être corrigée.
 3. Onglet **Aujourd'hui** : bannière « Bonjour » avec la date, tuiles **Matin** et **Soir** (la dose proposée en grand, « au lieu de N UI », bouton **Valider N UI** qui demande confirmation), colonne **Pourquoi ?** avec les glycémies qui décident, dernière mesure, alertes. **Voir le détail** ouvre la règle appliquée, les glycémies de référence (un clic ouvre leur note) et le lecteur (dernière récupération, modèle, horloge).
-4. Onglet **Mesures** : filtres par période, moment de la journée et marqueur repas ; résumé de la sélection (moyenne, part dans l'objectif, hypoglycémies, barre de répartition sous / dans / au-dessus de l'objectif) ; mesures groupées par jour (« Aujourd'hui », « Hier », puis la date), avec la glycémie du matin retenue dans l'en-tête du jour et une pastille **Retenue** sur sa ligne. Chaque mesure montre l'icône de son marqueur, sur le modèle de celles du lecteur, et sa valeur colorée selon l'objectif, avec une flèche ↑ ou ↓ hors objectif :
+4. Onglet **Mesures** : durée en pilules, moment de la journée et marqueur repas en menus déroulants ; résumé de la sélection (moyenne, hypoglycémies, mesures avec marqueur, et une barre de répartition sous / dans / au-dessus de l'objectif qui donne la part dans l'objectif) ; mesures groupées par jour (« Aujourd'hui », « Hier », puis la date), avec la glycémie du matin retenue dans l'en-tête du jour et une pastille **Retenue** sur sa ligne. Chaque mesure montre l'icône de son marqueur, sur le modèle de celles du lecteur, et sa valeur colorée selon l'objectif, avec une flèche ↑ ou ↓ hors objectif :
 
    | Icône | Marqueur |
    | --- | --- |

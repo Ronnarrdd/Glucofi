@@ -6,7 +6,7 @@ Le design de référence est celui de la tablette : [GlucofiAndroid/DESIGN.md](.
 
 - Couleurs claires et sombres : `app/theme.py`, comparées à `Theme.kt` par `app/tests/test_theme.py`.
 - Échelle typographique : mêmes tailles, en points (px × 0,75) pour suivre le réglage « grands caractères » de Gnome.
-- Composants : bannière du renard, tuiles Matin et Soir, bouton « Valider N UI », colonne « Pourquoi ? », « Dernière mesure », bandeaux à pastille ronde, filtres en pilules, cartes par jour, tuiles de synthèse pastel (`app/components.py`, `app/art.py`).
+- Composants : bannière du renard, tuiles Matin et Soir, bouton « Valider N UI », colonne « Pourquoi ? », « Dernière mesure », bandeaux à pastille ronde, filtres en pilules (durée) et en menus déroulants (moment, marqueur de Mesures), cartes par jour, tuiles de synthèse pastel (`app/components.py`, `app/art.py`).
 - Logo, soleil et lune : mêmes tracés que `Common.kt` et `ic_doodle_*.xml` (vérifié par test). Renard et tache de pinceau : illustrations de la tablette, le renard seulement dans la bannière d'Aujourd'hui et du premier lancement.
 - Icônes : Material Symbols arrondies, comme la tablette.
 
