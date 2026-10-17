@@ -2,8 +2,8 @@
 
 Chaque onglet est sa page : Aujourd'hui (today_page.py), Mesures (measures_page.py), Graphiques (charts_page.py),
 Doses (doses_page.py). La barre du haut est plate sur le sauge : logo et « Glucofi » à gauche, onglets en pilules
-au centre (en bas sous 600 px), tablette, PDF et menu à droite. « Récupérer les mesures » est dans la bannière
-d'Aujourd'hui, dans le menu et sur Ctrl+R.
+au centre (en bas sous 600 px), menu à droite. Tablette et PDF ne sont pas des pages : ils sont dans le menu
+(Ctrl+P pour le PDF). « Récupérer les mesures » est dans la bannière d'Aujourd'hui, dans le menu et sur Ctrl+R.
 """
 
 from __future__ import annotations
@@ -92,23 +92,12 @@ class MainWindow(Adw.ApplicationWindow):
         section.append("Préférences", "win.preferences")
         section.append("À propos de Glucofi", "win.about")
         menu.append_section(None, section)
-        menu_button = Gtk.MenuButton(icon_name="glucofi-menu-symbolic", menu_model=menu, tooltip_text="Menu principal")
+        self.menu_button = menu_button = Gtk.MenuButton(icon_name="glucofi-menu-symbolic", menu_model=menu, tooltip_text="Menu principal")
         menu_button.update_property([Gtk.AccessibleProperty.LABEL], ["Menu principal"])
         header.pack_end(menu_button)
-        pdf_button = Gtk.Button(icon_name="glucofi-pdf-symbolic", tooltip_text="Exporter en PDF (Ctrl+P)", action_name="win.export")
-        pdf_button.update_property([Gtk.AccessibleProperty.LABEL], ["Exporter en PDF"])
-        header.pack_end(pdf_button)
-        self.sync_button = Gtk.Button(
-            icon_name="glucofi-tablet-symbolic",
-            tooltip_text="Synchroniser avec la tablette, par le Wi-Fi si elle est couplée, sinon en USB (dans les deux sens)",
-            action_name="win.sync-tablet",
-        )
-        self.sync_button.update_property([Gtk.AccessibleProperty.LABEL], ["Synchroniser avec la tablette"])
-        header.pack_end(self.sync_button)
         self.spinner = Adw.Spinner(visible=False)
         header.pack_end(self.spinner)
-        for button in (menu_button, pdf_button, self.sync_button):
-            button.add_css_class("header-action")
+        menu_button.add_css_class("header-action")
 
         self.bottom_nav = NavBar(self.stack, PAGES, compact=True)
         bottom = Gtk.Box()
@@ -132,11 +121,9 @@ class MainWindow(Adw.ApplicationWindow):
             return breakpoint
 
         narrow(NARROW)
-        # le dernier point de rupture vérifié l'emporte : celui-ci reprend tout le précédent ; la tablette et le PDF
-        # restent dans le menu
+        # le dernier point de rupture vérifié l'emporte : celui-ci reprend tout le précédent
         tiny = narrow(TINY)
-        for widget in (self.brand_name, self.sync_button, pdf_button):
-            tiny.add_setter(widget, "visible", False)
+        tiny.add_setter(self.brand_name, "visible", False)
         style_manager = Adw.StyleManager.get_default()
         dark_handler = style_manager.connect("notify::dark", self._on_dark_changed)
         self.connect("destroy", lambda _w: style_manager.disconnect(dark_handler))

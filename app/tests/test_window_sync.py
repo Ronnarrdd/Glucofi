@@ -82,7 +82,7 @@ class WindowSyncTest(unittest.TestCase):
         self.assertEqual(self.tablet.store.count_readings(), 2)
         self.assertEqual(self.tablet.store.dosing_settings(), PROTOCOL)
         self.assertEqual(self.toasts[-1], "PC et tablette (SM X210) synchronisés.")
-        self.assertTrue(self.window.sync_button.get_sensitive())
+        self.assertTrue(self.window.lookup_action("sync-tablet").get_enabled())
         self.run_sync()
         self.assertEqual(self.toasts[-1], "PC et tablette (SM X210) déjà à jour.")
         self.assertEqual(self.tablet.files(), [])

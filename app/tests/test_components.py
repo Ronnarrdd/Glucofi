@@ -302,6 +302,22 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(self.window.bottom_nav.buttons["doses"].get_active())
         self.window.stack.set_visible_child_name("today")
 
+    def test_tablet_and_pdf_are_in_the_menu_not_in_the_header(self):
+        def actions(model):
+            for i in range(model.get_n_items()):
+                action = model.get_item_attribute_value(i, "action", None)
+                if action is not None:
+                    yield action.get_string()
+                for kind in ("section", "submenu"):
+                    sub = model.get_item_link(i, kind)
+                    if sub is not None:
+                        yield from actions(sub)
+
+        in_menu = set(actions(self.window.menu_button.get_menu_model()))
+        self.assertTrue({"win.sync-tablet", "win.export", "win.fetch"} <= in_menu)
+        self.assertFalse(hasattr(self.window, "sync_button"))
+        self.assertEqual(self.app.get_accels_for_action("win.export"), ["<Control>p"])
+
     def test_failed_read_lands_on_today_and_in_a_dialog_elsewhere(self):
         errors = []
         self.window.error = lambda heading, body: errors.append(heading)

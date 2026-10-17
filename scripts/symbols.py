@@ -5,7 +5,7 @@
     python3 -m scripts.symbols --from DIR   même chose depuis des SVG déjà téléchargés (DIR/<nom>.svg)
 
 Mêmes icônes que Glucofi pour Android (scripts/symbols_to_vector.py de GlucofiAndroid), plus celles propres au PC
-(graphiques, PDF, tablette, menu). Source : github.com/google/material-design-icons, au commit COMMIT,
+(graphiques, menu). Source : github.com/google/material-design-icons, au commit COMMIT,
 symbols/web/<nom>/materialsymbolsoutlined/<nom>_24px.svg. Ces SVG sont faits d'un seul <path> sur le viewBox
 « 0 -960 960 960 » ; tout autre format fait échouer la conversion plutôt que de dessiner une icône fausse.
 Le tracé est réécrit en 16 x 16 (voir to_symbolic) et en gris Adwaita, comme les icônes des marqueurs repas :
@@ -43,8 +43,6 @@ SYMBOLS = {
     "arrow-down": "arrow_downward",
     "sync": "sync",
     "usb": "usb",
-    "tablet": "tablet_android",
-    "pdf": "picture_as_pdf",
     "menu": "menu",
     "check": "check",
     "warning": "warning",
