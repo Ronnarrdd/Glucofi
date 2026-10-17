@@ -1,5 +1,6 @@
-"""Onglet Mesures, composé comme sur la tablette (MeasuresScreen.kt) : titre, trois rangées de filtres en pilules,
-tuiles de synthèse pastel, carte de répartition, puis une carte blanche par jour.
+"""Onglet Mesures, composé comme sur la tablette (MeasuresScreen.kt) : titre, filtres (la durée en pilules, le moment
+et le marqueur en menus déroulants sur une seule rangée), tuiles de synthèse pastel, carte de répartition, puis une
+carte blanche par jour.
 
 Toute la mise en forme (textes, niveaux, parts de la barre) vient de app.measures ; ce module ne fait
 qu'assembler les widgets. Une ligne entière ouvre la note de sa mesure.
@@ -15,6 +16,7 @@ from gi.repository import Adw, GLib, Gtk
 from app.components import (
     ARROWS,
     FilterChips,
+    FilterMenu,
     LevelChip,
     LevelValue,
     Notice,
@@ -61,11 +63,14 @@ class MeasuresPage:
         self.page = Page()
         self.widget = self.page
         self.page.append(screen_title("Mesures"))
-        filters = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        filters = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.days_chips = FilterChips(DAY_FILTERS, self.days, self._on_days, name="Durée")
-        self.period_chips = FilterChips(PERIOD_FILTERS, self.period, self._on_period, name="Moment")
-        self.meal_chips = FilterChips(MEAL_FILTERS, self.meal, self._on_meal, name="Marqueur")
-        for row in (self.days_chips, self.period_chips, self.meal_chips):
+        self.period_menu = FilterMenu(PERIOD_FILTERS, self.period, self._on_period, name="Moment")
+        self.meal_menu = FilterMenu(MEAL_FILTERS, self.meal, self._on_meal, name="Marqueur")
+        menus = Adw.WrapBox(child_spacing=24, line_spacing=8)
+        menus.append(self.period_menu)
+        menus.append(self.meal_menu)
+        for row in (self.days_chips, menus):
             filters.append(row)
         self.page.append(filters)
         self.summary_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -105,8 +110,8 @@ class MeasuresPage:
     def reset_filters(self) -> None:
         self._resetting = True
         self.days_chips.set_active("all")
-        self.period_chips.set_active("all")
-        self.meal_chips.set_active("all")
+        self.period_menu.set_active("all")
+        self.meal_menu.set_active("all")
         self._resetting = False
         self.refresh()
 

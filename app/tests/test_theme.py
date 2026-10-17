@@ -388,10 +388,12 @@ class ThemeClassesTest(unittest.TestCase):
         self.assertTrue(all(t.get_label() == "En cours" for t in tags))
 
     def test_filters_are_chips(self):
-        from app.components import FilterChips
+        from app.components import FilterChips, FilterMenu
 
         rows = [w for w in descendants(self.window) if isinstance(w, FilterChips)]
-        self.assertEqual(len(rows), 4, "trois rangées dans Mesures, une dans Graphiques")
+        self.assertEqual(len(rows), 2, "une rangée dans Mesures (la durée), une dans Graphiques")
+        menus = [w for w in descendants(self.window) if isinstance(w, FilterMenu)]
+        self.assertEqual(len(menus), 2, "moment et marqueur de Mesures")
         self.assertFalse([w for w in descendants(self.window) if isinstance(w, Adw.ToggleGroup)])
 
     def test_charts_are_rebuilt_on_dark_switch(self):

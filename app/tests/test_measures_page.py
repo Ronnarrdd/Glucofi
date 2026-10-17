@@ -12,6 +12,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gtk  # noqa: E402
 
+from app.components import FilterChips  # noqa: E402
 from app.measures import MARKER_ICONS, measure_view  # noqa: E402
 from contracts import DosingSettings  # noqa: E402
 from scripts.demo_export import build  # noqa: E402
@@ -82,21 +83,36 @@ class MeasuresPageTest(unittest.TestCase):
         for name in MARKER_ICONS.values():
             self.assertTrue(theme.has_icon(name), name)
 
-    def test_filter_chips_are_exclusive_and_drive_the_list(self):
+    def test_marker_menu_is_exclusive_and_drives_the_list(self):
         page, _state = self.make_page()
         total = len(self.rows(page))
-        page.meal_chips.chips["fasting"].set_active(True)
-        self.assertEqual([k for k, c in page.meal_chips.chips.items() if c.get_active()], ["fasting"])
+        page.meal_menu.set_active("fasting")
+        self.assertEqual(page.meal_menu.active, "fasting")
+        self.assertEqual(page.meal_menu.dropdown.get_selected_item().get_string(), "À jeun")
         self.assertEqual(page.meal, "fasting")
         fasting = self.rows(page)
         self.assertTrue(0 < len(fasting) < total)
         self.assertTrue(all(texts(r)[1].startswith("À jeun") for r in fasting))
-        page.meal_chips.set_active("other")
+        page.meal_menu.set_active("other")
         self.assertEqual(self.rows(page), [])
         self.assertEqual([n.text.get_label() for n in self.notices(page)], ["Aucune mesure pour ces filtres."])
         page.reset_filters()
         self.assertEqual((page.days, page.period, page.meal), ("all", "all", "all"))
         self.assertEqual(len(self.rows(page)), total)
+        self.assertEqual((page.period_menu.active, page.meal_menu.active), ("all", "all"), "le retour à « tout » remet les menus")
+
+    def test_period_menu_filters_by_moment(self):
+        page, _state = self.make_page()
+        total = len(self.rows(page))
+        page.period_menu.set_active("Matin")
+        morning = self.rows(page)
+        self.assertTrue(0 < len(morning) < total)
+        self.assertTrue(all(texts(r)[1].endswith("Matin") for r in morning))
+
+    def test_secondary_filters_are_two_menus_not_two_chip_rows(self):
+        page, _state = self.make_page()
+        self.assertEqual(sum(isinstance(w, FilterChips) for w in descendants(page.widget)), 1)
+        self.assertEqual(sum(isinstance(w, Gtk.DropDown) for w in descendants(page.widget)), 2)
 
     def test_checkmark_only_on_the_active_chip(self):
         page, _state = self.make_page()

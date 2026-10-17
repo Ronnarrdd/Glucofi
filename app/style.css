@@ -369,6 +369,22 @@ button.filter-chip:checked {
   color: var(--glucofi-on-primary);
 }
 
+/* Filtres secondaires en menu déroulant : même pilule blanche que les filtres, nom du filtre devant */
+
+.filter-menu dropdown.filter-dropdown > button {
+  background-color: var(--glucofi-card);
+  color: var(--glucofi-on-surface);
+  border-radius: 9999px;
+  min-height: 40px;
+  padding: 4px 8px 4px 16px;
+  box-shadow: none;
+}
+
+.filter-menu dropdown.filter-dropdown > button:hover {
+  background-color: var(--glucofi-secondary-container);
+  color: var(--glucofi-on-secondary-container);
+}
+
 scrolledwindow.filter-chips undershoot.right {
   background-image: linear-gradient(to left, var(--glucofi-background), transparent);
 }

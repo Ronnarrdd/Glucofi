@@ -260,6 +260,42 @@ class FilterChips(Gtk.ScrolledWindow):
             self._on_change(key)
 
 
+class FilterMenu(Gtk.Box):
+    """Filtre exclusif en menu déroulant en pilule, précédé de son nom (« Moment  [Tous moments ▾] »). Même contrat que
+    FilterChips (`active`, `set_active`, rappel au changement) : pour les filtres secondaires, qui n'ont pas besoin
+    d'être tous visibles à la fois."""
+
+    __gtype_name__ = "GlucofiFilterMenu"
+
+    def __init__(self, options: Sequence[tuple[str, str]], active: str, on_change: Callable[[str], None], name: str):
+        super().__init__(spacing=8, valign=Gtk.Align.CENTER)
+        self.add_css_class("filter-menu")
+        self._keys = [key for key, _text in options]
+        self._on_change = on_change
+        self._active = active
+        self.dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new([text for _key, text in options]), selected=self._keys.index(active),
+        )
+        self.dropdown.add_css_class("filter-dropdown")
+        describe(self.dropdown, name)
+        self.append(label(name, "label-large", "muted"))
+        self.append(self.dropdown)
+        self.dropdown.connect("notify::selected", self._selected)
+
+    @property
+    def active(self) -> str:
+        return self._active
+
+    def set_active(self, key: str) -> None:
+        self.dropdown.set_selected(self._keys.index(key))
+
+    def _selected(self, *_args) -> None:
+        key = self._keys[self.dropdown.get_selected()]
+        if key != self._active:
+            self._active = key
+            self._on_change(key)
+
+
 class MeterChip(Gtk.Box):
     """Pastille menthe « Lecteur branché » ou « Lecteur non branché », icône USB."""
 
