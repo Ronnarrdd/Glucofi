@@ -341,6 +341,10 @@ button.list-row image.muted {
 .level-value.level-high, .level-ink.level-high { color: var(--glucofi-level-high); }
 .level-value.dimmed { color: var(--glucofi-on-surface-variant); }
 
+/* libadwaita met .dimmed à 55 % d'opacité : une mesure écartée tombait à 2,5:1 de contraste. L'état « écartée » est dit
+   par l'étiquette et le texte, pas par la transparence. */
+.level-value.dimmed, .level-chip.dimmed { opacity: 1; }
+
 /* Étiquettes : information, pas action */
 
 label.tag {
@@ -483,7 +487,7 @@ preferencesgroup.form-section list.boxed-list > row.button {
 /* champs des paliers : même contour que les champs du formulaire, hauteur de 44 px */
 preferencesgroup.form-section row.tier-row entry {
   min-height: 44px;
-  padding: 0 12px;
+  padding: 0 8px;
   border-radius: 12px;
   border: 1px solid var(--glucofi-outline);
   background-color: var(--glucofi-card);

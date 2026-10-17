@@ -38,7 +38,7 @@ class ProtocolEditorTest(unittest.TestCase):
         editor = self.editor(FULL)
         entries = [e for _row, fields in editor.tiers["low_tiers"].rows for e in fields.values()]
         self.assertTrue(entries)
-        self.assertGreaterEqual(ENTRY_CHARS, 6)
+        self.assertGreaterEqual(ENTRY_CHARS, 5)
         self.assertTrue(all(e.get_width_chars() == ENTRY_CHARS for e in entries))
 
     def test_morning_fields_follow_the_switch(self):

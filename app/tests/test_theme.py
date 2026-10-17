@@ -213,6 +213,15 @@ class AndroidParityTest(unittest.TestCase):
 
 
 class StyleSheetTest(unittest.TestCase):
+    def test_adwaita_dimmed_opacity_is_reset_on_readings(self):
+        """libadwaita pose .dimmed à 55 % d'opacité : une mesure écartée tombait à 2,5:1 de contraste (eval du thème)."""
+        import re
+
+        rule = re.search(r"([^{}]*\.level-value\.dimmed[^{}]*)\{([^}]*)\}", CSS.split("libadwaita met .dimmed")[1])
+        self.assertIsNotNone(rule)
+        self.assertIn(".level-chip.dimmed", rule.group(1))
+        self.assertIn("opacity: 1", rule.group(2))
+
     def test_no_literal_color_in_style_css(self):
         """Les couleurs ne vivent que dans app/theme.py : la feuille n'emploie que var(--glucofi-*)."""
         self.assertEqual(re.findall(r"#[0-9A-Fa-f]{3,8}\b|\b(?:rgba?|hsla?|alpha|mix)\(", CSS_CODE), [])

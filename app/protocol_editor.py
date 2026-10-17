@@ -11,8 +11,9 @@ from gi.repository import Adw, Gtk
 from app.protocol import FormError, protocol_from_form
 
 LOW_COLUMNS = (("below_g_l", "Sous", "0,60", "g/L"), ("step_ui", "baisser de", "4", "UI"))
-# champs des paliers : six caractères et 44 px de haut (style.css), assez larges pour être visés à la souris
-ENTRY_CHARS = 6
+# champs des paliers : cinq caractères et 44 px de haut (style.css), assez larges pour être visés à la souris
+# et assez étroits pour que le dialogue tienne dans 360 px
+ENTRY_CHARS = 5
 HIGH_COLUMNS = (("above_g_l", "Au-dessus de", "2,00", "g/L"), ("step_ui", "augmenter de", "4", "UI"), ("days", "après", "2", "jours"))
 
 
