@@ -295,15 +295,16 @@ button.list-row image.muted {
 .moment-morning .dose-number, .moment-morning .dose { color: var(--glucofi-morning-dose); }
 .moment-evening .dose-number, .moment-evening .dose { color: var(--glucofi-evening-dose); }
 
-label.status-pill {
+/* la pastille d'état est une boîte (flèche du changement + texte) : le texte hérite de sa couleur */
+.status-pill {
   border-radius: 9999px;
   padding: 6px 16px;
 }
 
-.moment-morning label.status-pill { color: var(--glucofi-morning-muted); }
-.moment-evening label.status-pill { color: var(--glucofi-evening-muted); }
+.moment-morning .status-pill { color: var(--glucofi-morning-muted); }
+.moment-evening .status-pill { color: var(--glucofi-evening-muted); }
 
-.moment-tile label.status-pill.proposed {
+.moment-tile .status-pill.proposed {
   background-color: var(--glucofi-card);
   color: var(--glucofi-on-surface);
 }

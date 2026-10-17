@@ -381,8 +381,14 @@ class MomentTile(Gtk.Box):
         self.doodle = Doodle("sun" if target == "morning" else "moon", size=80, valign=Gtk.Align.CENTER)
         dose_row.append(self.doodle)
         self.append(dose_row)
-        self.status = label("", "status-pill", "title-medium", halign=Gtk.Align.CENTER, wrap=True, justify=Gtk.Justification.CENTER)
-        self.append(self.status)
+        # la pastille porte le fond ; la flèche dit le sens du changement sans passer par la couleur
+        self.arrow = Gtk.Image(pixel_size=20, visible=False, accessible_role=Gtk.AccessibleRole.PRESENTATION)
+        self.status = label("", "title-medium", wrap=True, justify=Gtk.Justification.CENTER)
+        self.status_pill = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+        self.status_pill.add_css_class("status-pill")
+        self.status_pill.append(self.arrow)
+        self.status_pill.append(self.status)
+        self.append(self.status_pill)
         self.append(Gtk.Box(vexpand=True, height_request=16))
         self.validate = button("", kind="primary", tall=True, on_click=on_validate, margin_top=4)
         self.revealer = Gtk.Revealer(
@@ -394,11 +400,15 @@ class MomentTile(Gtk.Box):
         shown = proposed_ui if proposed_ui is not None else current_ui
         self.dose.set_value(shown)
         self.status.set_label(status)
+        change = proposed_ui is not None and proposed_ui != current_ui
+        self.arrow.set_visible(change)
+        if change:
+            self.arrow.set_from_icon_name(ARROWS["high" if proposed_ui > current_ui else "low"])
         if proposed_ui is not None:
-            self.status.add_css_class("proposed")
+            self.status_pill.add_css_class("proposed")
             self.validate.set_label(f"Valider {proposed_ui} UI")
         else:
-            self.status.remove_css_class("proposed")
+            self.status_pill.remove_css_class("proposed")
         self.revealer.set_reveal_child(proposed_ui is not None)
         describe(self.dose, description)
 

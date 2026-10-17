@@ -102,11 +102,16 @@ class ComponentsTest(unittest.TestCase):
         tile.update(6, 8, "au lieu de 6 UI", "Soir : nouvelle dose proposée 8 UI")
         self.assertTrue(tile.revealer.get_reveal_child())
         self.assertEqual(tile.validate.get_label(), "Valider 8 UI")
-        self.assertTrue(tile.status.has_css_class("proposed"))
+        self.assertTrue(tile.status_pill.has_css_class("proposed"))
+        self.assertTrue(tile.arrow.get_visible())
+        self.assertEqual(tile.arrow.get_icon_name(), "glucofi-arrow-up-symbolic", "6 vers 8 : la dose monte")
         self.assertEqual(tile.dose.text, "8 UI")
         tile.update(8, None, "inchangée", "Soir : 8 UI, inchangée")
         self.assertFalse(tile.revealer.get_reveal_child())
-        self.assertFalse(tile.status.has_css_class("proposed"))
+        self.assertFalse(tile.status_pill.has_css_class("proposed"))
+        self.assertFalse(tile.arrow.get_visible(), "pas de proposition : pas de flèche")
+        tile.update(8, 6, "au lieu de 8 UI", "Soir : nouvelle dose proposée 6 UI")
+        self.assertEqual(tile.arrow.get_icon_name(), "glucofi-arrow-down-symbolic", "8 vers 6 : la dose baisse")
 
     def test_dose_slides_up_when_it_rises_and_down_when_it_falls(self):
         from app.components import DoseStack
