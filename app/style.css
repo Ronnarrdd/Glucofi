@@ -480,6 +480,24 @@ preferencesgroup.form-section list.boxed-list > row.button {
   border-style: dashed;
 }
 
+/* champs des paliers : même contour que les champs du formulaire, hauteur de 44 px */
+preferencesgroup.form-section row.tier-row entry {
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--glucofi-outline);
+  background-color: var(--glucofi-card);
+  box-shadow: none;
+}
+
+preferencesgroup.form-section row.tier-row entry:focus-within {
+  border-color: var(--glucofi-primary);
+}
+
+preferencesgroup.form-section row.tier-row entry.error {
+  border-color: var(--glucofi-level-low);
+}
+
 .unit-suffix {
   color: var(--glucofi-on-surface-variant);
   font-weight: 700;

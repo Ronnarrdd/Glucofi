@@ -11,6 +11,8 @@ from gi.repository import Adw, Gtk
 from app.protocol import FormError, protocol_from_form
 
 LOW_COLUMNS = (("below_g_l", "Sous", "0,60", "g/L"), ("step_ui", "baisser de", "4", "UI"))
+# champs des paliers : six caractères et 44 px de haut (style.css), assez larges pour être visés à la souris
+ENTRY_CHARS = 6
 HIGH_COLUMNS = (("above_g_l", "Au-dessus de", "2,00", "g/L"), ("step_ui", "augmenter de", "4", "UI"), ("days", "après", "2", "jours"))
 
 
@@ -57,7 +59,7 @@ class TierList:
         for name, before, placeholder, unit in self.columns:
             unit_box = Gtk.Box(spacing=6)
             unit_box.append(Gtk.Label(label=before))
-            entry = Gtk.Entry(width_chars=4, max_width_chars=4, placeholder_text=placeholder, text=values.get(name, ""))
+            entry = Gtk.Entry(width_chars=ENTRY_CHARS, max_width_chars=ENTRY_CHARS, placeholder_text=placeholder, text=values.get(name, ""))
             entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
             entry.update_property([Gtk.AccessibleProperty.LABEL], [f"{before} ({unit})"])
             entry.connect("changed", lambda e: e.remove_css_class("error"))

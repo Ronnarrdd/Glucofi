@@ -32,6 +32,15 @@ class ProtocolEditorTest(unittest.TestCase):
             with self.subTest(morning=settings.morning_titration is not None):
                 self.assertEqual(self.editor(settings).read({}), (settings, None))
 
+    def test_tier_fields_are_wide_enough_to_aim_at(self):
+        from app.protocol_editor import ENTRY_CHARS
+
+        editor = self.editor(FULL)
+        entries = [e for _row, fields in editor.tiers["low_tiers"].rows for e in fields.values()]
+        self.assertTrue(entries)
+        self.assertGreaterEqual(ENTRY_CHARS, 6)
+        self.assertTrue(all(e.get_width_chars() == ENTRY_CHARS for e in entries))
+
     def test_morning_fields_follow_the_switch(self):
         editor = self.editor(SIMPLE)
         self.assertFalse(editor.morning_rows[0].get_visible())
