@@ -51,7 +51,9 @@ RISE_OFFSET = 48.0
 
 # bannière (FoxBanner de Common.kt)
 BANNER_COMPACT_BELOW = 560
-BANNER_MIN_HEIGHT = 216
+BANNER_MIN_HEIGHT = 168
+# marge haut et bas de la colonne de texte, et écart entre le sous-titre et l'action de la bannière large
+BANNER_PAD_Y, BANNER_ACTION_GAP = 18, 14
 ART_SHARE, ART_MIN, ART_MAX = 0.46, 240.0, 440.0
 FOX_SHARE = 0.72
 FOX_SHIFT = 0.2
@@ -376,8 +378,8 @@ class FoxBanner(Gtk.Widget):
         # en large, la pastille du coin est dans la part du renard : elle ne compte pas dans la colonne de texte
         text_w = self._text_width(width)
         actions = self._height(self.actions, text_w)
-        column = self._height(self.heading, text_w) + (22 + actions if actions else 0)
-        return max(BANNER_MIN_HEIGHT, 24 + column + 24, 16 + corner_h + 16)
+        column = self._height(self.heading, text_w) + (BANNER_ACTION_GAP + actions if actions else 0)
+        return max(BANNER_MIN_HEIGHT, BANNER_PAD_Y + column + BANNER_PAD_Y, 16 + corner_h + 16)
 
     def do_get_request_mode(self):
         return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH
@@ -428,7 +430,10 @@ class FoxBanner(Gtk.Widget):
         text_w = self._text_width(width)
         heading_h = self._height(self.heading, text_w)
         actions_h = self._height(self.actions, text_w)
-        self._place(self.heading, 32, 24, text_w, heading_h)
-        self._place(self.actions, 32, 24 + heading_h + 22, text_w, actions_h)
+        # colonne de texte centrée verticalement : sous la hauteur minimale, la marge se répartit des deux côtés
+        column = heading_h + (BANNER_ACTION_GAP + actions_h if actions_h else 0)
+        top = max(BANNER_PAD_Y, (height - column) / 2)
+        self._place(self.heading, 32, top, text_w, heading_h)
+        self._place(self.actions, 32, top + heading_h + BANNER_ACTION_GAP, text_w, actions_h)
         if self.corner is not None and corner_h:
             self._place(self.corner, width - 16 - corner_w, height - 16 - corner_h, corner_w, corner_h)

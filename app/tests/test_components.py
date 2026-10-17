@@ -136,6 +136,7 @@ class ComponentsTest(unittest.TestCase):
         self.addCleanup(window.destroy)
         self.assertTrue(banner.title.has_css_class("display-medium"))
         self.assertGreaterEqual(banner.measure(Gtk.Orientation.VERTICAL, 1000)[1], BANNER_MIN_HEIGHT)
+        self.assertLessEqual(BANNER_MIN_HEIGHT, 170, "la bannière ne passe pas avant les doses")
         banner.set_property("compact", True)
         self.assertTrue(banner.title.has_css_class("headline-large"))
         self.assertFalse(banner.title.has_css_class("display-medium"))
