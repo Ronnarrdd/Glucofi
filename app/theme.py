@@ -186,9 +186,10 @@ ADWAITA = {
 # plat comme la tablette : la barre du haut se fond dans le fond sauge, sans filet ni ombre
 ADWAITA_FIXED = {"headerbar-shade-color": "transparent"}
 
-# tuiles de synthèse de l'onglet Mesures, dans l'ordre de la tablette : Moyenne, Dans l'objectif,
-# Hypoglycémies, Avec marqueur
+# tuiles de synthèse, dans l'ordre de la tablette : Moyenne, Dans l'objectif, Hypoglycémies, Avec marqueur
 SUMMARY_PASTELS = ("pastel-sky", "pastel-mint", "pastel-lavender", "pastel-peach")
+# Mesures n'a pas la tuile « Dans l'objectif » (la barre de répartition la dit déjà) : Moyenne, Hypoglycémies, Avec marqueur
+MEASURE_PASTELS = tuple(p for p in SUMMARY_PASTELS if p != "pastel-mint")
 LEVEL_KEYS = ("low", "in", "high")
 
 TEXT = 4.5

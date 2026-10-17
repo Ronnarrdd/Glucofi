@@ -188,7 +188,7 @@ class MeasuresPageTest(unittest.TestCase):
             tiles = [w for w in descendants(page.summary_box) if w.has_css_class("stat-tile")]
             return len([t for t in tiles if t.get_parent() is tiles[0].get_parent()])
 
-        self.assertEqual(per_line(), 4)
+        self.assertEqual(per_line(), 3)
         page._set_narrow(True)
         self.assertEqual(per_line(), 2)
 

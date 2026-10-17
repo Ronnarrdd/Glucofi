@@ -41,7 +41,7 @@ from app.measures import (
     measure_view,
 )
 from app.state import AppState
-from app.theme import SUMMARY_PASTELS
+from app.theme import MEASURE_PASTELS
 from contracts import Reading
 from services.charts import PERIODS
 
@@ -147,9 +147,9 @@ class MeasuresPage:
         )
 
     def _summary(self, summary: MeasureSummary) -> None:
-        """Tuiles pastel de même largeur posées sur le fond (quatre par ligne, deux en étroit), puis la répartition."""
-        per_line = 2 if self.narrow else 4
-        tiles = list(zip(summary.tiles, itertools.cycle(SUMMARY_PASTELS)))
+        """Tuiles pastel de même largeur posées sur le fond (trois par ligne, deux en étroit), puis la répartition."""
+        per_line = 2 if self.narrow else 3
+        tiles = list(zip(summary.tiles, itertools.cycle(MEASURE_PASTELS)))
         for start in range(0, len(tiles), per_line):
             row = Gtk.Box(spacing=12, homogeneous=True)
             for tile, tone in tiles[start:start + per_line]:

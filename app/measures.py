@@ -320,7 +320,6 @@ def _summary(shown: Sequence[Reading], settings: DosingSettings) -> MeasureSumma
     )
     tiles = (
         StatTile("Moyenne", fmt_g_l(round(stats.mean_mg)) if stats.mean_mg is not None else "-", _plural(stats.count, "mesure")),
-        StatTile("Dans l'objectif", f"{stats.pct_in_range:.0f} %", f"{low} à {high}"),
         StatTile("Hypoglycémies", str(hypo_count), f"sous {fmt_g_l(hypo_mg)} · {stats.pct_hypo:.0f} %"),
         StatTile("Avec marqueur", str(marked), f"sur {stats.count}"),
     )

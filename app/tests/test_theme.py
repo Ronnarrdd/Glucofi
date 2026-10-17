@@ -365,7 +365,7 @@ class ThemeClassesTest(unittest.TestCase):
     def test_summary_tiles_are_pastel_and_outside_the_cards(self):
         measures = self.classed("stat-tile", self.window.measures.summary_box)
         self.assertEqual([next(c for c in t.get_css_classes() if c.startswith("pastel-")) for t in measures],
-                         list(theme.SUMMARY_PASTELS))
+                         list(theme.MEASURE_PASTELS))
         charts = self.classed("stat-tile", self.window.charts.widget)
         self.assertEqual([next(c for c in t.get_css_classes() if c.startswith("pastel-")) for t in charts],
                          ["pastel-sage", *theme.SUMMARY_PASTELS])

@@ -198,6 +198,11 @@ class RangeSpansTest(unittest.TestCase):
 
 
 class SummaryTest(unittest.TestCase):
+    def test_in_range_share_is_in_the_bar_not_in_a_tile(self):
+        summary = view([reading("2026-09-01T07:00", 100), reading("2026-09-01T13:00", 200)]).summary
+        self.assertNotIn("Dans l'objectif", [t.label for t in summary.tiles])
+        self.assertIn("Dans l'objectif 0,80 g/L à 1,50 g/L : 50 % (1)", [s.legend for s in summary.segments])
+
     def test_summary_follows_compute_stats(self):
         readings = [
             reading("2026-09-01T08:00", 60, Meal.FASTING),
@@ -212,7 +217,6 @@ class SummaryTest(unittest.TestCase):
             [(t.label, t.value, t.detail) for t in summary.tiles],
             [
                 ("Moyenne", fmt_g_l(round(stats.mean_mg)), "3 mesures"),
-                ("Dans l'objectif", "33 %", "0,80 g/L à 1,50 g/L"),
                 ("Hypoglycémies", "1", "sous 0,70 g/L · 33 %"),
                 ("Avec marqueur", "2", "sur 3"),
             ],
