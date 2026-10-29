@@ -1,4 +1,5 @@
 from contracts.models import (
+    CGM_SOURCE,
     DOSE_TARGET_LABELS_FR,
     EVENING_ALLOWED_MEALS,
     EVENING_FIRST_CHOICE,
@@ -49,6 +50,7 @@ from contracts.models import (
 )
 
 __all__ = [
+    "CGM_SOURCE",
     "DOSE_TARGET_LABELS_FR",
     "EVENING_ALLOWED_MEALS",
     "EVENING_FIRST_CHOICE",

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 from contracts import (
+    CGM_SOURCE,
     MEAL_TEXT_MAX_CHARS,
     NOTE_MAX_CHARS,
     PROTOCOL_FIELDS,
@@ -42,6 +43,8 @@ log = logging.getLogger("glucofi.store")
 SCHEMA_VERSION = 7
 SQLITE_HEADER = b"SQLite format 3\x00"
 TIME_FIELDS = ("morning_start", "morning_end", "evening_start", "evening_end")
+# heures facultatives (None : réglage absent)
+OPTIONAL_TIME_FIELDS = ("cgm_morning", "cgm_evening")
 # sauvegardes « avant-fusion » gardées : une par fusion qui a changé quelque chose
 MERGE_BACKUPS_KEPT = 20
 
@@ -182,6 +185,9 @@ def settings_json(settings: DosingSettings) -> dict:
     values = asdict(settings)
     for key in TIME_FIELDS:
         values[key] = getattr(settings, key).strftime("%H:%M")
+    for key in OPTIONAL_TIME_FIELDS:
+        value = getattr(settings, key)
+        values[key] = None if value is None else value.strftime("%H:%M")
     return values
 
 
@@ -198,7 +204,7 @@ def _canonical(values: dict) -> str:
 def settings_from_json(values: dict) -> dict:
     """Réglages relus (même incomplets) ; les heures redeviennent des `time`, les champs inconnus sont ignorés."""
     values = dict(values)
-    for key in TIME_FIELDS:
+    for key in (*TIME_FIELDS, *OPTIONAL_TIME_FIELDS):
         if isinstance(values.get(key), str):
             values[key] = time.fromisoformat(values[key])
     known = DosingSettings.__dataclass_fields__.keys()
@@ -582,7 +588,8 @@ class Store:
     def readings(self, since: datetime | None = None, until: datetime | None = None) -> list[Reading]:
         """Mesures avec leur marqueur et leur note (Reading.note)."""
         query = (
-            "SELECT r.device_time, r.mg_dl, r.epoch, r.device_id, r.meal, r.meter_serial, n.tags, n.text, n.exclude_from_dosing"
+            "SELECT r.device_time, r.mg_dl, r.epoch, r.device_id, r.meal, r.meter_serial, n.tags, n.text, n.exclude_from_dosing,"
+            " r.source"
             " FROM readings r LEFT JOIN reading_notes n ON n.device_time = r.device_time AND n.mg_dl = r.mg_dl WHERE 1=1"
         )
         args: list[str] = []
@@ -602,8 +609,9 @@ class Store:
                 meal=Meal(meal) if meal is not None else None,
                 meter_serial=serial,
                 note=None if tags is None or _is_erased(tags, text, exclude) else _note(tags, text, exclude),
+                cgm=source == CGM_SOURCE,
             )
-            for t, mg, epoch, dev_id, meal, serial, tags, text, exclude in self.db.execute(query, args)
+            for t, mg, epoch, dev_id, meal, serial, tags, text, exclude, source in self.db.execute(query, args)
         ]
 
     # Notes

@@ -16,6 +16,8 @@ MG_DL_PER_MMOL_L = 18.0
 # lectures hors échelle du lecteur ("HI" / "LO"), codées comme Tidepool : juste au-delà de la plage 10-600
 MG_DL_HIGH = 601
 MG_DL_LOW = 9
+# `source` des mesures importées du capteur FreeStyle Libre 3 par LibreLinkUp (services/device/librelinkup.py)
+CGM_SOURCE = "librelinkup"
 
 
 class AccuchekExit(IntEnum):
@@ -128,6 +130,8 @@ class Reading:
     meal: Meal | None = field(default=None, compare=False)
     meter_serial: str | None = field(default=None, compare=False)
     note: ReadingNote | None = field(default=None, compare=False)
+    # mesure du capteur en continu (source CGM_SOURCE), pas du lecteur : le protocole ne les traite pas pareil
+    cgm: bool = field(default=False, compare=False)
 
     @property
     def g_l(self) -> float:
@@ -386,6 +390,12 @@ class DosingSettings:
     evening_end: time = time(21, 59)
     # écarter la glycémie de référence qui suit une dose cochée « non prise » (voir Injection) ; désactivé par défaut
     skip_after_missed_dose: bool = False
+    # capteur en continu (LibreLinkUp) source de la glycémie de référence : valeur la plus proche de l'heure du matin
+    # (et du soir si la dose du matin est ajustée), à `cgm_window_min` minutes près ; les mesures du lecteur ne comptent
+    # alors plus pour l'ajustement. cgm_morning None : mesures du lecteur, comme avant.
+    cgm_morning: time | None = None
+    cgm_evening: time | None = None
+    cgm_window_min: int = 20
 
     def __post_init__(self) -> None:
         if not self.insulin.strip():
@@ -401,6 +411,27 @@ class DosingSettings:
             raise ValueError("la plage du soir doit commencer avant de finir")
         if self.morning_titration is not None and self.evening_start <= self.morning_end:
             raise ValueError("la plage du soir doit commencer après la fin de la plage du matin")
+        self._check_cgm()
+
+    def _check_cgm(self) -> None:
+        if self.cgm_morning is None:
+            if self.cgm_evening is not None:
+                raise ValueError("indiquez l'heure du matin du capteur avant celle du soir")
+            return
+        if not 1 <= self.cgm_window_min <= 60:
+            raise ValueError("la tolérance du capteur doit être de 1 à 60 minutes")
+        if not self.morning_start <= self.cgm_morning <= self.morning_end:
+            raise ValueError("l'heure du capteur le matin doit être dans la plage du matin")
+        if self.morning_titration is not None:
+            if self.cgm_evening is None:
+                raise ValueError("indiquez l'heure du capteur le soir : la dose du matin est ajustée")
+            if not self.evening_start <= self.cgm_evening <= self.evening_end:
+                raise ValueError("l'heure du capteur le soir doit être dans la plage du soir")
+
+    @property
+    def uses_cgm(self) -> bool:
+        """Le capteur en continu donne la glycémie de référence (sinon, le lecteur)."""
+        return self.cgm_morning is not None
 
     @property
     def evening_titration(self) -> Titration:

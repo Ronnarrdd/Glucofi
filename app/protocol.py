@@ -6,7 +6,9 @@ Le formulaire est un dict de chaînes, plus quatre listes de paliers (dicts de c
 - morning_enabled ("1" ou "") puis m_low_g_l, m_high_g_l, m_step_ui, m_high_streak_days, m_low_tiers,
   m_high_tiers : dose du matin, réglée sur la glycémie du soir ;
 - morning_start, morning_end, evening_start, evening_end : plages horaires, HH:MM ;
-- skip_missed_dose ("1" ou "") : écarter la glycémie de référence qui suit une dose déclarée non prise.
+- skip_missed_dose ("1" ou "") : écarter la glycémie de référence qui suit une dose déclarée non prise ;
+- cgm_enabled ("1" ou "") puis cgm_morning, cgm_evening (HH:MM), cgm_window_min : glycémie de référence donnée par
+  le capteur en continu (LibreLinkUp), valeur la plus proche de l'heure, au lieu des mesures du lecteur.
 Une clé absente garde la valeur de `base` (ancien formulaire, réglage non affiché).
 Les erreurs (FormError) désignent le champ fautif : "low_g_l", "m_high_tiers.1.days", ...
 """
@@ -127,6 +129,29 @@ def _base_settings(base: dict | None) -> DosingSettings | None:
         return None
 
 
+def _cgm_values(form: dict, values: dict) -> None:
+    """Heures du capteur ; vérifiées ici pour désigner le champ fautif (DosingSettings les revérifie)."""
+    if "cgm_enabled" not in form:
+        return
+    if str(form["cgm_enabled"]).strip().lower() not in TRUE_WORDS:
+        values.update(cgm_morning=None, cgm_evening=None)
+        return
+    if "cgm_window_min" in form:
+        values["cgm_window_min"] = parse_count("cgm_window_min", form["cgm_window_min"], 1, 60)
+    morning = parse_hhmm("cgm_morning", form.get("cgm_morning", ""))
+    start, end = values.get("morning_start", time(5, 0)), values.get("morning_end", time(11, 59))
+    if not start <= morning <= end:
+        raise FormError("cgm_morning", f"l'heure du capteur le matin doit être dans la plage du matin ({fmt_hhmm(start)}-{fmt_hhmm(end)})")
+    values["cgm_morning"] = morning
+    values["cgm_evening"] = None
+    if values.get("morning_titration") is not None:
+        evening = parse_hhmm("cgm_evening", form.get("cgm_evening", ""))
+        e_start, e_end = values.get("evening_start", time(17, 0)), values.get("evening_end", time(21, 59))
+        if not e_start <= evening <= e_end:
+            raise FormError("cgm_evening", f"l'heure du capteur le soir doit être dans la plage du soir ({fmt_hhmm(e_start)}-{fmt_hhmm(e_end)})")
+        values["cgm_evening"] = evening
+
+
 def protocol_from_form(form: dict, base: dict | None = None) -> DosingSettings:
     """Protocole saisi depuis l'ordonnance ; `base` garde les réglages absents du formulaire (alertes...)."""
     insulin = str(form.get("insulin", "")).strip()
@@ -154,6 +179,7 @@ def protocol_from_form(form: dict, base: dict | None = None) -> DosingSettings:
         values["morning_titration"] = (
             _titration(form, "m_", previous.morning_titration if previous else None) if enabled else None
         )
+    _cgm_values(form, values)
 
     defaults = DosingSettings(insulin="x", low_g_l=0.8, high_g_l=1.5, step_ui=1, high_streak_days=1)
     start, end = (values.get(k, getattr(defaults, k)) for k in ("morning_start", "morning_end"))
@@ -195,6 +221,12 @@ def protocol_to_form(settings: DosingSettings | None, draft: dict | None = None)
         form["morning_enabled"] = "1" if settings.morning_titration is not None else ""
         form |= {key: fmt_hhmm(getattr(settings, key)) for key in TIME_FIELDS}
         form["skip_missed_dose"] = "1" if settings.skip_after_missed_dose else ""
+        form |= {
+            "cgm_enabled": "1" if settings.uses_cgm else "",
+            "cgm_morning": fmt_hhmm(settings.cgm_morning) if settings.cgm_morning else "07:00",
+            "cgm_evening": fmt_hhmm(settings.cgm_evening) if settings.cgm_evening else "18:30",
+            "cgm_window_min": str(settings.cgm_window_min),
+        }
         return form
     draft = draft or {}
     defaults = DosingSettings(insulin="x", low_g_l=0.8, high_g_l=1.5, step_ui=1, high_streak_days=1)
@@ -209,6 +241,10 @@ def protocol_to_form(settings: DosingSettings | None, draft: dict | None = None)
         **_titration_form(None, "m_"),
         "morning_enabled": "",
         "skip_missed_dose": "1" if draft.get("skip_after_missed_dose") else "",
+        "cgm_enabled": "1" if draft.get("cgm_morning") else "",
+        "cgm_morning": fmt_hhmm(draft["cgm_morning"]) if isinstance(draft.get("cgm_morning"), time) else "07:00",
+        "cgm_evening": fmt_hhmm(draft["cgm_evening"]) if isinstance(draft.get("cgm_evening"), time) else "18:30",
+        "cgm_window_min": str(draft.get("cgm_window_min") or 20),
     }
     for key in TIME_FIELDS:
         value = draft.get(key) or getattr(defaults, key)
@@ -229,7 +265,16 @@ def _rules(t: Titration) -> list[str]:
     return lines
 
 
+def cgm_rule_text(at: time, settings: DosingSettings) -> str:
+    return (
+        f"Valeur du capteur la plus proche de {fmt_hhmm(at)}, à {settings.cgm_window_min} min près. "
+        "Les mesures du lecteur ne comptent pas pour l'ajustement."
+    )
+
+
 def morning_rule_text(settings: DosingSettings) -> str:
+    if settings.uses_cgm:
+        return cgm_rule_text(settings.cgm_morning, settings)
     return (
         f"Entre {settings.morning_start:%H:%M} et {settings.morning_end:%H:%M} : première mesure « à jeun », "
         "sinon première mesure « avant repas » ou sans marqueur. "
@@ -238,6 +283,8 @@ def morning_rule_text(settings: DosingSettings) -> str:
 
 
 def evening_rule_text(settings: DosingSettings) -> str:
+    if settings.uses_cgm:
+        return cgm_rule_text(settings.cgm_evening, settings)
     return (
         f"Entre {settings.evening_start:%H:%M} et {settings.evening_end:%H:%M}, avant le dîner : première mesure "
         "« avant repas », sinon première mesure sans marqueur. "
@@ -261,6 +308,12 @@ def protocol_sections(settings: DosingSettings) -> list[tuple[str, list[str]]]:
         ))
     else:
         sections.append(("Dose du matin", ["Pas d'ajustement automatique : elle ne change que si vous la modifiez."]))
+    if settings.uses_cgm:
+        sections.append(("Glycémie de référence", [
+            f"Capteur FreeStyle Libre 3 (LibreLinkUp) : valeur la plus proche de {fmt_hhmm(settings.cgm_morning)} le matin"
+            + (f" et de {fmt_hhmm(settings.cgm_evening)} le soir" if settings.cgm_evening else "")
+            + f", à {settings.cgm_window_min} min près. Les mesures du lecteur ne comptent pas pour l'ajustement."
+        ]))
     sections.append(("Doses non prises", [
         "Les glycémies de référence qui suivent une dose déclarée non prise sont écartées de l'ajustement "
         "(sauf sous le seuil bas)."
@@ -299,6 +352,13 @@ def _flatten(settings: DosingSettings) -> dict[str, str]:
             )
     if settings.morning_titration is not None:
         out["Plage du soir"] = f"{settings.evening_start:%H:%M}-{settings.evening_end:%H:%M}"
+    out["Glycémie de référence"] = (
+        "capteur Libre 3 à "
+        + " et ".join(fmt_hhmm(t) for t in (settings.cgm_morning, settings.cgm_evening) if t is not None)
+        + f" (±{settings.cgm_window_min} min)"
+        if settings.uses_cgm
+        else "lecteur Accu-Chek"
+    )
     out["Écarter après une dose non prise"] = "oui" if settings.skip_after_missed_dose else "non"
     out["Alerte hypoglycémie"] = f"sous {fmt_g_l(round(settings.hypo_alert_g_l * 100))}"
     out["Alerte hyperglycémie"] = f"au-dessus de {fmt_g_l(round(settings.hyper_alert_g_l * 100))}"

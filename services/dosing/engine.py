@@ -33,7 +33,7 @@ le soir d'un jour suit la dose du matin du même jour.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Sequence
 
 from contracts import (
@@ -60,6 +60,8 @@ from contracts import (
 from services.adherence import dose_before, missed_doses, unlogged_alerts
 
 ALERT_LOOKBACK_DAYS = 7
+# deux mesures du capteur d'une même alerte (hypo ou hyper) à plus de ce délai font deux épisodes
+CGM_EPISODE_GAP_MIN = 30
 
 DOSE_WORDS = {DoseTarget.EVENING: "du soir", DoseTarget.MORNING: "du matin"}
 RULES = {
@@ -105,8 +107,34 @@ def _ui(change: DoseChange, target: DoseTarget) -> int:
     return change.evening_ui if target is DoseTarget.EVENING else change.morning_ui
 
 
+def _minutes(t: time) -> int:
+    return t.hour * 60 + t.minute
+
+
+def cgm_reference_time(settings: DosingSettings, target: DoseTarget) -> time | None:
+    """Heure à laquelle le capteur donne la glycémie de référence de `target` ; None si le lecteur la donne."""
+    if not settings.uses_cgm:
+        return None
+    return settings.cgm_morning if target is DoseTarget.EVENING else settings.cgm_evening
+
+
+def _cgm_distance(reading: Reading, at: time) -> int:
+    """Écart en minutes entre l'heure de la mesure du capteur et l'heure de référence."""
+    return abs(_minutes(reading.device_time.time()) - _minutes(at))
+
+
 def is_reference_candidate(reading: Reading, settings: DosingSettings, target: DoseTarget) -> bool:
-    """Dans la plage de la glycémie de référence de `target` (bornes incluses), avec un marqueur admis."""
+    """Peut être la glycémie de référence de `target`.
+
+    Capteur en continu (settings.uses_cgm) : seules les mesures du capteur comptent, à `cgm_window_min` minutes de
+    l'heure de référence ; celles du lecteur ne comptent plus. Sinon : mesure du lecteur dans la plage (bornes
+    incluses), avec un marqueur admis ; les mesures du capteur ne comptent pas.
+    """
+    if settings.uses_cgm:
+        at = cgm_reference_time(settings, target)
+        return reading.cgm and at is not None and _cgm_distance(reading, at) <= settings.cgm_window_min
+    if reading.cgm:
+        return False
     t = reading.device_time.time()
     if target is DoseTarget.EVENING:
         return settings.morning_start <= t <= settings.morning_end and reading.meal in MORNING_ALLOWED_MEALS
@@ -192,7 +220,18 @@ def reference_readings(
     Matin (dose du soir) : la première « à jeun », sinon la première « avant repas » ou sans marqueur.
     Soir (dose du matin) : la première « avant repas », sinon la première sans marqueur.
     Les mesures écartées par une note ou par une dose non prise (excluded_from_dosing) ne sont jamais retenues.
+    Avec le capteur : la mesure du capteur la plus proche de l'heure de référence (la plus tôt si deux sont à égalité).
     """
+    at = cgm_reference_time(settings, target)
+    if at is not None:
+        nearest: dict[date, Reading] = {}
+        for reading in sorted(readings):
+            if excluded_from_dosing(reading, settings, missed) or not is_reference_candidate(reading, settings, target):
+                continue
+            best = nearest.get(reading.day)
+            if best is None or _cgm_distance(reading, at) < _cgm_distance(best, at):
+                nearest[reading.day] = reading
+        return [MorningReading(day, r) for day, r in sorted(nearest.items())]
     first_choice = MORNING_FIRST_CHOICE if target is DoseTarget.EVENING else EVENING_FIRST_CHOICE
     preferred: dict[date, Reading] = {}
     fallback: dict[date, Reading] = {}
@@ -305,7 +344,11 @@ def _adjust(
                 AlertLevel.WARNING,
                 "stale" + CODE_SUFFIX[target],
                 f"Dernière glycémie du {ref} il y a {age_days} jours ({latest.day:%d/%m/%Y}) : "
-                f"récupérez les mesures du lecteur avant d'ajuster la dose {dose}.",
+                + (
+                    f"vérifiez la connexion LibreLinkUp avant d'ajuster la dose {dose}."
+                    if settings.uses_cgm
+                    else f"récupérez les mesures du lecteur avant d'ajuster la dose {dose}."
+                ),
             )
         )
         return keep("Données trop anciennes pour proposer un ajustement.", (latest.reading,))
@@ -361,12 +404,31 @@ def _high_streak(references: Sequence[MorningReading], high_mg: int) -> list[Mor
     return streak
 
 
+def _episodes(flagged: Sequence[Reading], lowest: bool) -> list[Reading]:
+    """Une mesure par épisode : les mesures du lecteur comptent chacune ; celles du capteur, prises à moins de
+    `CGM_EPISODE_GAP_MIN` minutes les unes des autres, ne font qu'un épisode, représenté par sa pire valeur."""
+    out = [r for r in flagged if not r.cgm]
+    episode: list[Reading] = []
+
+    def close() -> None:
+        if episode:
+            out.append(min(episode, key=lambda r: r.mg_dl) if lowest else max(episode, key=lambda r: r.mg_dl))
+            episode.clear()
+
+    for reading in (r for r in flagged if r.cgm):
+        if episode and reading.device_time - episode[-1].device_time > timedelta(minutes=CGM_EPISODE_GAP_MIN):
+            close()
+        episode.append(reading)
+    close()
+    return sorted(out)
+
+
 def _alerts(readings: Sequence[Reading], current: DoseChange, settings: DosingSettings, today: date):
     since = datetime.combine(today - timedelta(days=ALERT_LOOKBACK_DAYS - 1), datetime.min.time())
     recent = [r for r in readings if r.device_time >= since]
     hypo_mg, hyper_mg = _mg(settings.hypo_alert_g_l), _mg(settings.hyper_alert_g_l)
 
-    hypos = [r for r in recent if r.mg_dl < hypo_mg]
+    hypos = _episodes([r for r in recent if r.mg_dl < hypo_mg], lowest=True)
     if hypos:
         yield Alert(
             AlertLevel.DANGER,
@@ -374,7 +436,7 @@ def _alerts(readings: Sequence[Reading], current: DoseChange, settings: DosingSe
             f"{count_fr(len(hypos), 'hypoglycémie', 'hypoglycémies')} sous {fmt_g_l(hypo_mg)} sur {ALERT_LOOKBACK_DAYS} jours "
             f"(dernière : {fmt_reading(hypos[-1])}). Resucrez-vous et prévenez le médecin si cela se répète.",
         )
-    hypers = [r for r in recent if r.mg_dl > hyper_mg]
+    hypers = _episodes([r for r in recent if r.mg_dl > hyper_mg], lowest=False)
     if hypers:
         yield Alert(
             AlertLevel.DANGER,
