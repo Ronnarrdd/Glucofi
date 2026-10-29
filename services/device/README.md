@@ -7,3 +7,15 @@ Lecture du lecteur Accu-Chek Guide via `/usr/local/bin/accuchek`.
 - Erreurs, avec un message affichable qui reprend la raison donnée par accuchek : code 2 `DeviceNotConnected`, code 3 `DeviceAccessDenied`, code 4 `DeviceReadFailed`, code 5 `DeviceProtocolError` (sous-classe de `DeviceReadFailed`), code 6 `DeviceReadFailed` (accuchek n'a pas pu écrire le JSON : disque plein, pipe cassé), JSON illisible `InvalidOutput`. Codes : `contracts.AccuchekExit`, alignés sur `ExitCode` de `accuchek-src/session.h` (vérifié par `ExitCodeContractTest`). Un lecteur vide donne zéro mesure, sans erreur.
 - `--set-time` : accuchek remet le lecteur à l'heure du PC si l'écart dépasse 60 s, seulement si l'horloge du PC est synchronisée (`adjtimex`) et si le lecteur se déclare réglable. Une commande explicite (`command=` ou `GLUCOFI_ACCUCHEK_CMD`) est lancée telle quelle, sans `--set-time` ajouté.
 - `GLUCOFI_ACCUCHEK_CMD` remplace la commande (tests, autre binaire). Ne jamais définir `ACCUCHEK_DBG` : les logs d'accuchek partent alors sur stdout.
+
+## Capteur FreeStyle Libre 3 (`librelinkup.py`)
+
+Lecture du capteur par le compte de suivi LibreLinkUp, avec la bibliothèque communautaire [pylibrelinkup](https://pypi.org/project/pylibrelinkup) (`pip install --user pylibrelinkup`, importée seulement à l'appel). L'API est celle de l'application d'Abbott, sans documentation ni garantie : si elle change, seule la bibliothèque et ce fichier sont à mettre à jour.
+
+- `load_credentials()` : `LIBRELINKUP_EMAIL`, `LIBRELINKUP_PASSWORD`, `LIBRELINKUP_REGION` (FR par défaut) dans l'environnement, sinon dans un `.env` (mêmes fichiers que la clé Gemini, jamais suivis par git). Utiliser le compte de **suivi** LibreLinkUp, jamais celui de LibreLink.
+- `fetch(credentials, every_min=15)` : dernière valeur + graphique du premier patient partagé, en `ParseResult` (le même type que `parse_output`, donc `Store.import_readings` l'accepte tel quel). Le capteur est décrit comme un `MeterInfo` (Abbott, FreeStyle Libre 3, numéro de série du capteur). Bloquant : hors du thread GTK.
+- `to_reading()` : heure locale du téléphone à la minute, valeur arrondie en mg/dL, HI = 601 et LO = 9 comme sur le lecteur, hors 10-600 mg/dL refusée. Une même mesure relue ne se duplique pas (clé `device_time, mg_dl` du magasin).
+- `thin()` : le Libre 3 mesure chaque minute, le moteur de doses attend quelques mesures par jour. On garde la première mesure de chaque tranche de `every_min` minutes (`None` : toutes).
+- Erreurs `LibreLinkUpError` (sous-classe de `DeviceError`) avec message affichable : bibliothèque absente, identifiants refusés, aucun patient partagé, région inconnue, API ou réseau en échec.
+- Limite constatée le 2026-10-29 : le graphique renvoyé par l'API était vide (0 point) et seule la dernière valeur arrivait. Tant que l'historique ne remonte pas, il faut appeler `fetch` régulièrement pour accumuler les mesures.
+- Pas encore branché à l'interface ni au calcul des doses.
