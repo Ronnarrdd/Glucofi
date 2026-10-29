@@ -1,6 +1,6 @@
 """Compte LibreLinkUp dans les préférences : e-mail, mot de passe, région, essai de connexion. Mot de passe jamais relu.
 
-La partie sans GTK (resolve_account, connection_message) est testée à part ; CgmAccountPage n'est que le formulaire.
+La partie sans GTK (saisie, message de l'essai) est dans cgm_form.py, que la tablette utilise aussi ; ici, le formulaire.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from typing import Callable
 
 from gi.repository import Adw, GLib, Gtk
 
+from app.cgm_form import AccountError, connection_message, resolve_account  # noqa: F401  (réexportés : tests, dialogues)
 from app.protocol_editor import entry_row, form_group
-from contracts import count_fr
 from services import device
 from services.device import REGIONS, Credentials
 
@@ -23,42 +23,6 @@ INTRO = (
     "capteur. La personne qui porte le capteur vous invite depuis LibreLink : Partager, puis LibreLinkUp. "
     "Le mot de passe est gardé dans un fichier privé de ce PC (jamais dans la base ni envoyé à la tablette)."
 )
-
-
-class AccountError(ValueError):
-    """Formulaire du compte incomplet ; `field` : "email" ou "password"."""
-
-    def __init__(self, field: str, message: str):
-        super().__init__(message)
-        self.field = field
-
-
-def resolve_account(existing: Credentials | None, email: str, password: str, region: str) -> Credentials | None:
-    """Compte saisi ; None si les deux champs sont vides (rien à enregistrer). Mot de passe vide : celui déjà enregistré."""
-    email, password = email.strip(), password.strip()
-    if not email and not password:
-        return None
-    if not email:
-        raise AccountError("email", "indiquez l'e-mail du compte LibreLinkUp")
-    if not password and existing is not None and existing.email == email:
-        password = existing.password
-    if not password:
-        raise AccountError("password", "indiquez le mot de passe du compte LibreLinkUp")
-    if region not in REGIONS:
-        raise AccountError("email", f"région inconnue : {region}")
-    return Credentials(email, password, region)
-
-
-def connection_message(result: device.ParseResult) -> str:
-    """Résultat d'un essai de connexion, en une phrase."""
-    if not result.readings:
-        return "Connexion réussie, mais le capteur n'a encore envoyé aucune valeur."
-    latest = result.readings[-1]
-    sensor = f" (capteur {result.meter.serial})" if result.meter is not None else ""
-    read = count_fr(len(result.readings), "valeur lue", "valeurs lues")
-    return f"Connexion réussie{sensor} : {latest.mg_dl} mg/dL à {latest.device_time:%H:%M}, {read}."
-
-
 
 
 class CgmAccountPage:
