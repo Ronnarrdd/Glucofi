@@ -201,7 +201,7 @@ class FetchTest(unittest.TestCase):
         fake = FakeLlu(graph_data(
             [item("10/29/2026 7:00:10 PM", 150), item("10/29/2026 7:15:03 PM", 160)], item("10/29/2026 8:00:27 PM", 179)
         ))
-        result = self.fetch(fake)
+        result = self.fetch(fake, every_min=None)
         self.assertEqual([(r.device_time.strftime("%H:%M"), r.mg_dl) for r in result.readings], [("19:00", 150), ("19:15", 160), ("20:00", 179)])
         self.assertEqual(result.rejected, ())
         self.assertEqual((result.meter.model, result.meter.serial), ("FreeStyle Libre 3", "3MH00ABC"))
@@ -218,6 +218,27 @@ class FetchTest(unittest.TestCase):
             self.assertEqual(call["headers"]["account-id"], hashlib.sha256(USER_ID.encode()).hexdigest())
             self.assertEqual((call["headers"]["product"], call["headers"]["version"]), ("llu.android", "4.16.0"))
         self.assertEqual(graph["path"], f"/llu/connections/{PATIENT_ID}/graph")
+
+    def test_the_oldest_bucket_is_dropped_because_the_12_hour_window_may_cut_it(self):
+        """Deux appareils qui ne lisent pas au même moment ne voient pas la même tranche coupée : ils y garderaient deux points."""
+        fake = FakeLlu(graph_data(
+            [item("10/29/2026 7:03:00 PM", 150), item("10/29/2026 7:08:00 PM", 151), item("10/29/2026 7:13:00 PM", 152),
+             item("10/29/2026 7:18:00 PM", 160), item("10/29/2026 7:33:00 PM", 170)],
+            item("10/29/2026 7:48:00 PM", 180),
+        ))
+        kept = [(r.device_time.strftime("%H:%M"), r.mg_dl) for r in self.fetch(fake).readings]
+        self.assertEqual(kept, [("19:18", 160), ("19:33", 170), ("19:48", 180)])
+        self.assertEqual(len(self.fetch(fake, every_min=None).readings), 6, "sans réduction, rien n'est écarté")
+
+    def test_a_single_bucket_is_kept_whole(self):
+        fake = FakeLlu(graph_data([item("10/29/2026 7:03:00 PM", 150), item("10/29/2026 7:08:00 PM", 151)], None))
+        self.assertEqual([r.mg_dl for r in self.fetch(fake).readings], [150])
+
+    def test_the_same_window_read_twice_keeps_the_same_points(self):
+        points = [item(f"10/29/2026 7:{m:02d}:10 PM", 100 + m) for m in range(0, 60, 5)]
+        first = self.fetch(FakeLlu(graph_data(points, None)))
+        second = self.fetch(FakeLlu(graph_data(points, None)))
+        self.assertEqual(first.readings, second.readings)
 
     def test_graph_empty_still_returns_the_latest_value(self):
         result = self.fetch(FakeLlu(graph_data([], item("10/29/2026 8:00:27 PM", 179))))
@@ -242,7 +263,7 @@ class FetchTest(unittest.TestCase):
         self.assertIn("hors plage", result.rejected[0])
 
     def test_off_scale_values_use_the_meter_codes(self):
-        result = self.fetch(FakeLlu(graph_data([item("10/29/2026 7:00:00 PM", 400, high=True), item("10/29/2026 7:15:00 PM", 40, low=True)], None)))
+        result = self.fetch(FakeLlu(graph_data([item("10/29/2026 7:00:00 PM", 400, high=True), item("10/29/2026 7:15:00 PM", 40, low=True)], None)), every_min=None)
         self.assertEqual([(r.mg_dl, r.off_scale) for r in result.readings], [(601, "high"), (9, "low")])
 
     def test_french_process_reads_pm(self):

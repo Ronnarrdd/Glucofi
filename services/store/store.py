@@ -502,10 +502,13 @@ class Store:
         meter: MeterInfo | None = None,
         clock: MeterClock | None = None,
         glucose: SegmentCount | None = None,
+        journal: bool = True,
     ) -> ImportSummary:
         """Ajoute les nouvelles mesures ; pour celles déjà en base, prend le marqueur repas du lecteur s'il en a un.
 
         Un import sans marqueur (fichier ancien format) n'efface jamais un marqueur déjà connu.
+        `journal` faux : pas de ligne dans le journal des imports (lecture du capteur, toutes les 15 min : ce journal
+        décrit les lectures du lecteur, et ses lignes se fusionnent entre PC et tablette).
         """
         readings = list(readings)
         now = datetime.now().replace(microsecond=0)
@@ -531,17 +534,18 @@ class Store:
             markers_added = self._count_markers() - markers_before
             if serial is not None:
                 self._remember_meter(meter, now)
-            self.db.execute(
-                "INSERT INTO imports (at, source, received, added, rejected, meter_serial, clock_offset_s, clock_action,"
-                " glucose_announced, markers_added) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    now.isoformat(), source, len(readings), added, rejected, serial,
-                    clock.offset_s if clock is not None else None,
-                    clock.action.value if clock is not None else None,
-                    glucose.announced if glucose is not None else None,
-                    markers_added,
-                ),
-            )
+            if journal:
+                self.db.execute(
+                    "INSERT INTO imports (at, source, received, added, rejected, meter_serial, clock_offset_s, clock_action,"
+                    " glucose_announced, markers_added) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        now.isoformat(), source, len(readings), added, rejected, serial,
+                        clock.offset_s if clock is not None else None,
+                        clock.action.value if clock is not None else None,
+                        glucose.announced if glucose is not None else None,
+                        markers_added,
+                    ),
+                )
         return ImportSummary(
             source, len(readings), added, rejected, now, markers_added, serial,
             clock.offset_s if clock is not None else None,
@@ -740,9 +744,10 @@ class Store:
         return self.db.execute("SELECT COUNT(*) FROM meals WHERE text IS NOT NULL").fetchone()[0]
 
     def last_import(self) -> ImportSummary | None:
+        """Dernière lecture du lecteur ou d'un fichier ; les lignes du capteur (bases d'avant le journal sans capteur) sont ignorées."""
         row = self.db.execute(
             "SELECT source, received, added, rejected, at, markers_added, meter_serial, clock_offset_s, clock_action,"
-            " glucose_announced FROM imports ORDER BY id DESC LIMIT 1"
+            " glucose_announced FROM imports WHERE source != ? ORDER BY id DESC LIMIT 1", (CGM_SOURCE,)
         ).fetchone()
         if row is None:
             return None

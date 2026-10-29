@@ -195,4 +195,9 @@ def fetch_cgm(
     sensors = data.get("activeSensors") or []
     serial = str((sensors[0].get("sensor") or {}).get("sn", "")) if sensors else ""
     meter = MeterInfo(manufacturer="Abbott", model="FreeStyle Libre 3", serial=serial) if serial else None
-    return ParseResult(thin(set(readings), every_min), tuple(rejected), meter)
+    kept = thin(set(readings), every_min)
+    if every_min and len(kept) > 1:
+        # la tranche la plus ancienne est coupée par le bord des 12 h de LibreLinkUp : le PC et la tablette y garderaient
+        # chacun un autre point, donc des points en double après la fusion ; les lectures suivantes la verront entière
+        kept = kept[1:]
+    return ParseResult(kept, tuple(rejected), meter)

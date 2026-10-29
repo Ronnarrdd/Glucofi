@@ -38,6 +38,24 @@ class CgmReadingsTest(unittest.TestCase):
         self.store.import_readings([reading("2026-10-29 07:00", 120)], CGM_SOURCE)
         self.assertEqual([r.cgm for r in self.store.readings()], [False])
 
+    def test_sensor_imports_leave_the_import_journal_alone(self):
+        """Le journal décrit les lectures du lecteur : une ligne par lecture du capteur (toutes les 15 min) le noierait,
+        se fusionnerait entre PC et tablette, et remplacerait « dernière récupération »."""
+        self.store.import_readings([reading("2026-10-29 06:00", 100)], "lecteur")
+        summary = self.store.import_readings([reading("2026-10-29 07:00", 120)], CGM_SOURCE, journal=False)
+        self.assertEqual((summary.received, summary.added), (1, 1))
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM imports").fetchone()[0], 1)
+        self.assertEqual(self.store.last_import().source, "lecteur")
+
+    def test_old_journal_lines_of_the_sensor_never_become_the_last_import(self):
+        self.store.import_readings([reading("2026-10-29 06:00", 100)], "lecteur")
+        self.store.import_readings([reading("2026-10-29 07:00", 120)], CGM_SOURCE)  # base d'avant `journal=False`
+        self.assertEqual(self.store.last_import().source, "lecteur")
+
+    def test_journal_is_still_the_default(self):
+        self.store.import_readings([reading("2026-10-29 06:00", 100)], "lecteur")
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM imports").fetchone()[0], 1)
+
     def test_sensor_is_listed_among_the_meters(self):
         sensor = MeterInfo(manufacturer="Abbott", model="FreeStyle Libre 3", serial="0UFCE8AKP0")
         self.store.import_readings([reading("2026-10-29 07:00", 120)], CGM_SOURCE, meter=sensor)

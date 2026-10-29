@@ -18,6 +18,8 @@ Un import met à jour le marqueur des mesures déjà en base quand le lecteur en
 - Alertes (`MergeSummary.warnings`) : doses validées des deux côtés depuis la dernière fusion, ou protocole modifié des deux côtés. Les deux historiques sont gardés ; c'est à l'utilisateur de vérifier.
 - Limites connues : deux doses validées à la même seconde sur les deux appareils sont ordonnées par leur id local, qui peut différer d'une base à l'autre ; ne se produit pas en pratique (validation manuelle, à la seconde).
 
+Imports du capteur : `import_readings(..., journal=False)` ne laisse aucune ligne dans le journal des imports (une par quart d'heure le noierait, se fusionnerait entre PC et tablette et remplacerait « dernière récupération », qui décrit le lecteur) ; `last_import()` ignore aussi les lignes de source `librelinkup` des bases d'avant. Eval PC + tablette sur le même capteur : `python3 -m evals.cgm_two_devices` (lectures à des rythmes différents, trous de plus de 12 h, fusions dans les deux sens : convergence, rien de perdu ni en double).
+
 Eval : `python3 -m evals.store_merge` (60 scénarios PC/tablette tirés au hasard, oracle tenu à côté : convergence, rien de perdu ni en double, notes, protocole en cours, idempotence, source intacte ; seuil 100 %).
 
 ## Migrations

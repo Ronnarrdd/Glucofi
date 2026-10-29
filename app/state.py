@@ -341,7 +341,9 @@ class AppState:
     def import_cgm(self, result: ParseResult) -> ImportSummary:
         for reason in result.rejected:
             log.warning("mesure du capteur non retenue : %s", reason)
-        summary = self.store.import_readings(result.readings, CGM_SOURCE, rejected=len(result.rejected), meter=result.meter)
+        summary = self.store.import_readings(
+            result.readings, CGM_SOURCE, rejected=len(result.rejected), meter=result.meter, journal=False
+        )
         log.info("import capteur : %s reçues, %s nouvelles, %s rejetées", summary.received, summary.added, summary.rejected)
         return summary
 

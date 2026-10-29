@@ -60,6 +60,11 @@ class CgmStateTest(unittest.TestCase):
         self.assertEqual((summary.source, summary.received, summary.added, summary.rejected), ("librelinkup", 2, 2, 1))
         self.assertEqual([x.cgm for x in self.state.readings()], [True, True])
 
+    def test_sensor_import_is_not_journaled(self):
+        self.state.import_cgm(ParseResult((r("2026-09-05 07:00", 110),), ()))
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM imports").fetchone()[0], 0)
+        self.assertIsNone(self.state.last_import())
+
     def test_dose_follows_the_sensor_not_the_meter(self):
         sensor = replace(SETTINGS, cgm_morning=time(7, 0))
         self.state.start_protocol("Test", datetime(2026, 9, 1), 10, 6, sensor)

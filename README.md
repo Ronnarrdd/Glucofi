@@ -185,6 +185,7 @@ python3 -m evals.accuchek_errors           # pannes injectées (timeout, débran
 make -C services/device/accuchek-src fuzz  # 200 000 paquets USB mutés contre les décodeurs d'accuchek
 python3 -m evals.store_migration --db COPIE.db  # rapport avant/après d'une migration, sur une copie
 python3 -m evals.cgm_dosing                # moteur de doses avec le capteur : 200 scénarios au hasard contre un oracle en force brute
+python3 -m evals.cgm_two_devices           # PC et tablette lisent le même capteur à leur rythme puis fusionnent : convergence, rien de perdu ni en double
 python3 -m evals.store_merge               # fusion PC/tablette (mesures, notes, injections, repas, doses, protocole) : 60 scénarios contre un oracle
 python3 -m evals.meal_estimates            # estimation des repas par Gemini contre des repas de référence (réseau, clé, 13 requêtes, une passe par jour)
 ```
