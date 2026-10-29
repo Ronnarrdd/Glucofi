@@ -131,6 +131,24 @@ class ProtocolEditor:
         self._rows(window, form, (("morning_start", "Début", "HH:MM"), ("morning_end", "Fin", "HH:MM")))
         self._tier_group("", "Paliers de la dose du soir", form)
 
+        self.cgm = self._group(
+            "Capteur FreeStyle Libre 3",
+            "Si un capteur est suivi par LibreLinkUp (Préférences, onglet Capteur), il donne la glycémie de référence : "
+            "la valeur la plus proche de l'heure indiquée. Les mesures du lecteur Accu-Chek restent enregistrées mais "
+            "ne comptent plus pour l'ajustement.",
+        )
+        self.cgm_switch = Adw.SwitchRow(
+            title="Glycémie de référence donnée par le capteur",
+            subtitle="Sinon, ce sont les mesures du lecteur",
+            active=form.get("cgm_enabled") == "1",
+        )
+        self.cgm.add(self.cgm_switch)
+        self.cgm_rows = self._rows(self.cgm, form, (
+            ("cgm_morning", "Heure de la glycémie du matin (le lever)", "HH:MM"),
+            ("cgm_evening", "Heure de la glycémie du soir (avant le dîner)", "HH:MM"),
+            ("cgm_window_min", "Écart toléré avec cette heure", "min"),
+        ))
+
         missed = self._group(
             "Doses non prises",
             "Dans Aujourd'hui, vous cochez chaque dose prise ou non prise. Cette option est à réserver à une consigne "
@@ -164,6 +182,7 @@ class ProtocolEditor:
         ))
         self.morning_tiers = self._tier_group("m_", "Paliers de la dose du matin", form)
         self.morning_switch.connect("notify::active", lambda *_a: self._sync_morning())
+        self.cgm_switch.connect("notify::active", lambda *_a: self._sync_cgm())
         self._sync_morning()
 
     def _group(self, title: str, description: str) -> Adw.PreferencesGroup:
@@ -195,12 +214,22 @@ class ProtocolEditor:
         for row in self.morning_rows:
             row.set_visible(active)
         self.morning_tiers.set_visible(active)
+        self._sync_cgm()
+
+    def _sync_cgm(self) -> None:
+        """Champs du capteur visibles si le capteur est activé ; l'heure du soir si la dose du matin est ajustée."""
+        on = self.cgm_switch.get_active()
+        morning_row, evening_row, window_row = self.cgm_rows
+        morning_row.set_visible(on)
+        evening_row.set_visible(on and self.morning_switch.get_active())
+        window_row.set_visible(on)
 
     def form(self) -> dict:
         values = {key: row.get_text() for key, row in self.rows.items()}
         values |= {key: tiers.values() for key, tiers in self.tiers.items()}
         values["morning_enabled"] = "1" if self.morning_switch.get_active() else ""
         values["skip_missed_dose"] = "1" if self.skip_switch.get_active() else ""
+        values["cgm_enabled"] = "1" if self.cgm_switch.get_active() else ""
         return values
 
     def read(self, base: dict):

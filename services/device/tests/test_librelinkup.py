@@ -12,8 +12,9 @@ from services.device.librelinkup import (
     Credentials,
     LibreLinkUpError,
     LibreLinkUpNotInstalled,
-    fetch,
+    fetch_cgm as fetch,
     load_credentials,
+    save_credentials,
     thin,
     to_reading,
 )
@@ -101,6 +102,63 @@ class CredentialsTest(unittest.TestCase):
         file = self.env_file("LIBRELINKUP_EMAIL=a@b.c\n")
         self.assertIsNone(load_credentials({}, (file, Path("/nonexistent/.env"))))
         self.assertIsNone(load_credentials({}, ()))
+
+
+class RegionsTest(unittest.TestCase):
+    def test_default_region_is_listed(self):
+        from services.device.librelinkup import DEFAULT_REGION, REGIONS
+
+        self.assertIn(DEFAULT_REGION, REGIONS)
+
+    def test_regions_match_the_installed_library(self):
+        try:
+            from pylibrelinkup import APIUrl
+        except ImportError:
+            self.skipTest("pylibrelinkup n'est pas installée")
+        from services.device.librelinkup import REGIONS
+
+        self.assertEqual(set(REGIONS), {member.name for member in APIUrl})
+
+
+class SaveCredentialsTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "glucofi" / ".env"
+
+    def test_round_trip_with_awkward_passwords(self):
+        for password in ("p w=1#", "abc'", "'abc'", '"abc"', "a\\b $x", "é€"):
+            with self.subTest(password):
+                save_credentials(Credentials("a@b.c", password, "EU"), self.path)
+                self.assertEqual(load_credentials({}, (self.path,)), Credentials("a@b.c", password, "EU"))
+
+    def test_file_is_private_even_when_it_already_existed_wide_open(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text("GEMINI_API_KEY=abc\n")
+        self.path.chmod(0o644)
+        save_credentials(CREDENTIALS, self.path)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_other_lines_are_kept_and_old_values_replaced(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text("GEMINI_API_KEY=abc\nLIBRELINKUP_EMAIL=ancien\n# note\n")
+        save_credentials(CREDENTIALS, self.path)
+        lines = self.path.read_text().splitlines()
+        self.assertEqual(lines[0], "GEMINI_API_KEY=abc")
+        self.assertIn("# note", lines)
+        self.assertEqual(sum(line.startswith("LIBRELINKUP_EMAIL=") for line in lines), 1)
+
+    def test_none_removes_the_account_and_keeps_the_rest(self):
+        save_credentials(CREDENTIALS, self.path)
+        self.path.write_text("GEMINI_API_KEY=abc\n" + self.path.read_text())
+        save_credentials(None, self.path)
+        self.assertEqual(self.path.read_text(), "GEMINI_API_KEY=abc\n")
+        self.assertIsNone(load_credentials({}, (self.path,)))
+
+    def test_newline_in_a_value_is_refused(self):
+        with self.assertRaises(ValueError):
+            save_credentials(Credentials("a@b.c", "x\nGEMINI_API_KEY=pirate"), self.path)
+        self.assertFalse(self.path.exists())
 
 
 def fake_library(*, patients=1, graph=(), latest=None, sensors=("3MH00ABC",), error=None):

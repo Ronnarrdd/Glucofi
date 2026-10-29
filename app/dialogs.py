@@ -14,6 +14,7 @@ from typing import Callable
 from gi.repository import Adw, GLib, Gtk
 
 from app.art import FoxBanner
+from app.cgm_account import AccountError, CgmAccountPage
 from app.components import button, describe, label
 from app.meals import MealCell, baseline_of, entry_from_form, fmt_carbs, fmt_kcal
 from app.measures import marker_of
@@ -517,12 +518,27 @@ def preferences_dialog(parent: Gtk.Widget, state: AppState, on_saved: Callable[[
     actions.add(save)
     page.add(actions)
     dialog.add(page)
+    cgm = CgmAccountPage(state.cgm_credentials(), lambda text: dialog.add_toast(Adw.Toast(title=text, timeout=6)))
+    dialog.add(cgm.page)
 
     def attempt(*_args):
         new, problem = editor.read(state.store.dosing_draft())
         if new is None:
             dialog.add_toast(Adw.Toast(title=f"À corriger : {problem}", timeout=6))
             return
+        try:
+            account = cgm.account()
+        except AccountError as exc:
+            dialog.set_visible_page(cgm.page)
+            cgm._mark(exc)
+            dialog.add_toast(Adw.Toast(title=f"À corriger : {exc}", timeout=6))
+            return
+        if new.uses_cgm and account is None:
+            dialog.set_visible_page(cgm.page)
+            dialog.add_toast(Adw.Toast(title="Le capteur donne la glycémie de référence : saisissez le compte LibreLinkUp.", timeout=6))
+            return
+        if account != state.cgm_credentials():
+            state.save_cgm_credentials(account)
         state.set_patient_name(name.get_text())
         change = state.configure_protocol(new, motive.get_text().strip())
         dialog.force_close()

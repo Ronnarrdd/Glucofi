@@ -26,6 +26,7 @@ from services.dosing import (
     fmt_mg_dl,
     missed_dose_why,
     morning_readings,
+    reference_target,
 )
 
 WEEKDAYS_FR = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
@@ -199,7 +200,9 @@ def measure_view(
         {item.day: item.reading for item in evening_readings(by_period, settings, missed)}
         if settings.morning_titration is not None else {}
     )
-    shown = [r for r in by_period if _matches_meal(r, meal)]
+    # une mesure du capteur par quart d'heure : la liste ne montre que celles qui peuvent servir de référence
+    # (les autres sont dans Graphiques), avec leurs notes et leur écartement comme celles du lecteur
+    shown = [r for r in by_period if _matches_meal(r, meal) and (not r.cgm or reference_target(r, settings) is not None)]
     names = _meter_names(meters)
     by_day: dict[date, list[Reading]] = {}
     for reading in shown:
@@ -253,6 +256,8 @@ def level_label(level: str, settings: DosingSettings) -> str:
 
 
 def marker_of(reading: Reading) -> Marker:
+    if reading.cgm:
+        return Marker("cgm", "Capteur", MARKER_ICONS["none"])
     if reading.meal is None:
         return Marker("none", "Sans marqueur", MARKER_ICONS["none"])
     return Marker(reading.meal.value, MEAL_LABELS_FR[reading.meal], MARKER_ICONS[reading.meal.value])

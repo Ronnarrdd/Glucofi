@@ -22,6 +22,7 @@ from app.protocol import (  # noqa: F401  (réexportés : dialogues, pont Androi
 )
 from contracts import (
     REFERENCE_LABELS_FR,
+    CGM_SOURCE,
     ClockAction,
     DoseChange,
     DoseProposal,
@@ -39,7 +40,8 @@ from contracts import (
     count_fr,
 )
 from services.adherence import missed_doses
-from services.device import FetchResult, fmt_offset, parse_file
+from services.device import Credentials, FetchResult, ParseResult, fmt_offset, load_credentials, parse_file, save_credentials
+from services.meals.gemini import env_file_candidates
 from services.dosing import apply_adjustment, can_exclude, fmt_g_l, propose, reference_target
 from services.meals import MealEstimate, estimate_meal, load_api_key
 from services.store import ImportSummary, MergeSummary, Store
@@ -321,6 +323,27 @@ class AppState:
 
     def meters(self):
         return self.store.meters()
+
+    # Capteur FreeStyle Libre 3 (compte de suivi LibreLinkUp)
+
+    @property
+    def env_file(self) -> Path:
+        return self.data_dir / ".env"
+
+    def cgm_credentials(self) -> Credentials | None:
+        """Compte de suivi : le `.env` du dossier de données (écrit par les préférences) d'abord, puis les autres."""
+        return load_credentials(env_files=(self.env_file, *env_file_candidates()))
+
+    def save_cgm_credentials(self, credentials: Credentials | None) -> None:
+        save_credentials(credentials, self.env_file)
+        log.info("compte LibreLinkUp %s", "retiré" if credentials is None else f"enregistré ({credentials.region})")
+
+    def import_cgm(self, result: ParseResult) -> ImportSummary:
+        for reason in result.rejected:
+            log.warning("mesure du capteur non retenue : %s", reason)
+        summary = self.store.import_readings(result.readings, CGM_SOURCE, rejected=len(result.rejected), meter=result.meter)
+        log.info("import capteur : %s reçues, %s nouvelles, %s rejetées", summary.received, summary.added, summary.rejected)
+        return summary
 
     def import_file(self, path: Path) -> ImportSummary:
         parsed = parse_file(path)

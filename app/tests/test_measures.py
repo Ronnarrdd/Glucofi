@@ -3,7 +3,7 @@
 import unittest
 import xml.etree.ElementTree as ET
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 from app.measures import (
@@ -273,6 +273,48 @@ class NoteLineTest(unittest.TestCase):
         line = view([replace(reading("2026-09-01T07:00", 120), note=ReadingNote())]).lines[0]
         self.assertIsNone(line.note)
 
+
+
+class SensorReadingsTest(unittest.TestCase):
+    """Capteur en continu : la liste ne montre que les valeurs qui peuvent servir de référence."""
+
+    SENSOR = replace(SETTINGS, cgm_morning=time(7, 0))
+
+    def sensor(self, ts, mg):
+        moment = datetime.fromisoformat(ts)
+        return Reading(moment, mg, int(moment.timestamp()), cgm=True)
+
+    def day(self):
+        return [
+            self.sensor("2026-09-01T03:00", 60),
+            self.sensor("2026-09-01T06:45", 118),
+            self.sensor("2026-09-01T07:00", 110),
+            self.sensor("2026-09-01T07:15", 120),
+            self.sensor("2026-09-01T12:00", 150),
+            reading("2026-09-01T07:05", 40, Meal.FASTING),
+        ]
+
+    def test_only_candidates_and_meter_readings_are_listed(self):
+        shown = measure_view(self.day(), self.SENSOR, "all", "all", [], today=TODAY).lines
+        self.assertEqual([(l.time, l.mg) for l in shown][::-1], [
+            ("06:45", "118 mg/dL"), ("07:00", "110 mg/dL"), ("07:05", "40 mg/dL"), ("07:15", "120 mg/dL"),
+        ])
+
+    def test_the_nearest_to_the_hour_is_retained_and_the_meter_one_is_not(self):
+        lines = {l.time: l for l in measure_view(self.day(), self.SENSOR, "all", "all", [], today=TODAY).lines}
+        self.assertTrue(lines["07:00"].retained)
+        self.assertFalse(lines["07:05"].retained)
+        self.assertEqual(lines["07:00"].marker.label, "Capteur")
+        self.assertEqual(lines["07:05"].marker.label, "À jeun")
+
+    def test_day_header_chip_is_the_sensor_value(self):
+        day = measure_view(self.day(), self.SENSOR, "all", "all", [], today=TODAY).days[0]
+        self.assertEqual(day.morning.value, "1,10 g/L")
+        self.assertEqual(day.count_text, "4 mesures")
+
+    def test_sensor_readings_are_hidden_when_the_meter_is_the_source(self):
+        shown = measure_view(self.day(), SETTINGS, "all", "all", [], today=TODAY).lines
+        self.assertEqual([l.time for l in shown], ["07:05"])
 
 if __name__ == "__main__":
     unittest.main()

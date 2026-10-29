@@ -32,6 +32,33 @@ class ProtocolEditorTest(unittest.TestCase):
             with self.subTest(morning=settings.morning_titration is not None):
                 self.assertEqual(self.editor(settings).read({}), (settings, None))
 
+    def test_sensor_fields_are_read_back_and_follow_the_switches(self):
+        from app.tests.test_protocol_cgm import BOTH, METER
+
+        editor = self.editor(BOTH)
+        self.assertEqual(editor.read({}), (BOTH, None))
+        morning, evening, window = editor.cgm_rows
+        self.assertTrue(morning.get_visible() and evening.get_visible() and window.get_visible())
+        editor.morning_switch.set_active(False)
+        self.assertFalse(evening.get_visible())
+        self.assertTrue(morning.get_visible())
+        editor.cgm_switch.set_active(False)
+        self.assertFalse(any(row.get_visible() for row in editor.cgm_rows))
+        off, problem = editor.read({})
+        self.assertIsNone(problem)
+        self.assertFalse(off.uses_cgm)
+        self.assertEqual(self.editor(METER).read({}), (METER, None))
+
+    def test_a_bad_sensor_time_marks_its_row(self):
+        from app.tests.test_protocol_cgm import BOTH
+
+        editor = self.editor(BOTH)
+        editor.rows["cgm_morning"].set_text("15:00")
+        settings, problem = editor.read({})
+        self.assertIsNone(settings)
+        self.assertIn("plage du matin", problem)
+        self.assertTrue(editor.rows["cgm_morning"].has_css_class("error"))
+
     def test_tier_fields_are_wide_enough_to_aim_at(self):
         from app.protocol_editor import ENTRY_CHARS
 

@@ -42,6 +42,8 @@ PAGES = (
     ("meals", "Repas", "glucofi-meals-symbolic", "glucofi-meals-fill-symbolic"),
     ("doses", "Doses", "glucofi-doses-symbolic", "glucofi-doses-fill-symbolic"),
 )
+# le capteur mesure chaque minute ; le magasin garde une valeur par quart d'heure (services/device/librelinkup.thin)
+CGM_REFRESH_S = 15 * 60
 NARROW = "max-width: 600sp"
 # à 360 px, avec réduire, agrandir et fermer dans la barre, le nom à côté du logo ne tient plus
 TINY = "max-width: 400sp"
@@ -53,6 +55,9 @@ class MainWindow(Adw.ApplicationWindow):
         super().__init__(application=application, title="Glucofi", default_width=1100, default_height=800)
         self.state = state
         self.busy = False
+        self.cgm_busy = False
+        self._cgm_error: str | None = None
+        self._cgm_timer: int | None = None
 
         self._install_actions()
         self.toasts = Adw.ToastOverlay()
@@ -79,6 +84,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         menu.append("Récupérer les mesures", "win.fetch")
+        menu.append("Récupérer le capteur (LibreLinkUp)", "win.fetch-cgm")
         menu.append("Importer un fichier JSON…", "win.import")
         menu.append("Exporter en PDF…", "win.export")
         menu.append("Modifier la dose…", "win.manual-dose")
@@ -137,6 +143,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _install_actions(self):
         for name, callback in (
             ("fetch", self.fetch_from_device),
+            ("fetch-cgm", lambda: self.fetch_cgm(auto=False)),
             ("onboard", self._onboard),
             ("import", self.import_file),
             ("export", self.export_pdf),
@@ -220,6 +227,57 @@ class MainWindow(Adw.ApplicationWindow):
             if result.warnings:
                 self.error("Lecture terminée, à vérifier", "\n\n".join(result.warnings))
         self.refresh()
+        return False
+
+    # Capteur : LibreLinkUp, en arrière-plan
+
+    def start_cgm_refresh(self) -> None:
+        """Lit le capteur maintenant puis toutes les 15 min tant que la fenêtre vit (lancé par l'application seulement)."""
+        if self._cgm_timer is not None:
+            return
+        self._cgm_timer = GLib.timeout_add_seconds(CGM_REFRESH_S, lambda: self.fetch_cgm(auto=True) or True)
+        self.connect("destroy", lambda _w: GLib.source_remove(self._cgm_timer))
+        GLib.idle_add(lambda: self.fetch_cgm(auto=True) and False)
+
+    def fetch_cgm(self, auto: bool) -> None:
+        """Valeurs du capteur importées en arrière-plan. `auto` : silencieux sans compte, une erreur n'est montrée qu'une fois."""
+        if self.cgm_busy:
+            return
+        credentials = self.state.cgm_credentials()
+        if credentials is None:
+            if not auto:
+                self.toast("Ajoutez le compte LibreLinkUp : Préférences, onglet Capteur.")
+            return
+        self.cgm_busy = True
+        if not auto:
+            self.toast("Lecture du capteur…", timeout=3)
+
+        def work() -> None:
+            try:
+                result = device.fetch_cgm(credentials)
+                GLib.idle_add(self._cgm_done, result, None, auto)
+            except device.DeviceError as exc:
+                log.warning("capteur : %s", exc)
+                GLib.idle_add(self._cgm_done, None, str(exc), auto)
+            except Exception as exc:  # noqa: BLE001 - toute erreur doit remonter à l'écran
+                log.exception("capteur : erreur inattendue")
+                GLib.idle_add(self._cgm_done, None, f"Erreur inattendue : {exc}", auto)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cgm_done(self, result, error: str | None, auto: bool) -> bool:
+        self.cgm_busy = False
+        if error:
+            if not auto or error != self._cgm_error:
+                self.toast(f"Capteur illisible : {error}", timeout=8)
+            self._cgm_error = error
+            return False
+        self._cgm_error = None
+        summary = self.state.import_cgm(result)
+        if summary.added or not auto:
+            self.toast(f"Capteur : {import_message(summary)}")
+        if summary.added:
+            self.refresh()
         return False
 
     def import_file(self) -> None:

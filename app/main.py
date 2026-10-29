@@ -68,6 +68,7 @@ class GlucofiApp(Adw.Application):
             data_dir = default_data_dir()
             self.state = AppState(Store(data_dir / "glucofi.db"), data_dir)
             window = MainWindow(application=self, state=self.state)
+            window.start_cgm_refresh()
         window.present()
 
 

@@ -24,6 +24,8 @@ EMAIL_VARIABLE = "LIBRELINKUP_EMAIL"
 PASSWORD_VARIABLE = "LIBRELINKUP_PASSWORD"
 REGION_VARIABLE = "LIBRELINKUP_REGION"
 DEFAULT_REGION = "FR"
+# noms de pylibrelinkup.APIUrl (vérifiés par test quand la bibliothèque est installée)
+REGIONS = ("FR", "EU", "EU2", "DE", "US", "CA", "AE", "AP", "AU", "JP", "LA", "RU")
 # le Libre 3 mesure chaque minute ; le moteur de doses attend quelques mesures par jour
 DEFAULT_EVERY_MIN = 15
 
@@ -47,6 +49,19 @@ class Credentials:
     region: str = DEFAULT_REGION
 
 
+def _unquote(value: str) -> str:
+    """Retire une paire de guillemets qui entoure toute la valeur, pas ceux qui font partie d'un mot de passe."""
+    return value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"" else value
+
+
+def _quote(value: str) -> str:
+    """Entoure d'une paire de guillemets de l'autre sorte une valeur qui en porte déjà aux deux bouts."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        other = '"' if value[0] == "'" else "'"
+        return other + value + other
+    return value
+
+
 def _env_values(environ: Mapping[str, str], env_files: Sequence[Path]) -> dict[str, str]:
     """Variables LIBRELINKUP_* : l'environnement d'abord, puis les fichiers `.env` dans leur ordre."""
     wanted = (EMAIL_VARIABLE, PASSWORD_VARIABLE, REGION_VARIABLE)
@@ -58,7 +73,7 @@ def _env_values(environ: Mapping[str, str], env_files: Sequence[Path]) -> dict[s
             continue
         for line in lines:
             name, sep, value = line.strip().partition("=")
-            name, value = name.strip(), value.strip().strip("'\"")
+            name, value = name.strip(), _unquote(value.strip())
             if sep and name in values and value and not values[name]:
                 values[name] = value
     return values
@@ -73,6 +88,32 @@ def load_credentials(
     if not values[EMAIL_VARIABLE] or not values[PASSWORD_VARIABLE]:
         return None
     return Credentials(values[EMAIL_VARIABLE], values[PASSWORD_VARIABLE], values[REGION_VARIABLE] or DEFAULT_REGION)
+
+
+def save_credentials(credentials: Credentials | None, path: Path) -> None:
+    """Écrit (ou, avec None, retire) les identifiants dans le `.env` de `path`, droits 0600, autres lignes intactes.
+
+    Le mot de passe ne va jamais dans la base : elle est exportée vers la tablette et fusionnable.
+    """
+    names = (EMAIL_VARIABLE, PASSWORD_VARIABLE, REGION_VARIABLE)
+    try:
+        kept = [
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip().partition("=")[0].strip() not in names
+        ]
+    except OSError:
+        kept = []
+    if credentials is not None:
+        for name, value in zip(names, (credentials.email, credentials.password, credentials.region)):
+            if "\n" in value or "\r" in value:
+                raise ValueError("les identifiants ne peuvent pas contenir de saut de ligne")
+            kept.append(f"{name}={_quote(value)}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # créé en 0600 d'emblée : jamais lisible par les autres, même un instant
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(kept) + ("\n" if kept else ""))
+    path.chmod(0o600)
 
 
 def to_reading(timestamp: datetime, mg_dl: float, is_high: bool = False, is_low: bool = False) -> Reading:
@@ -104,7 +145,7 @@ def thin(readings: Sequence[Reading], every_min: int | None = DEFAULT_EVERY_MIN)
     return tuple(kept)
 
 
-def fetch(credentials: Credentials, every_min: int | None = DEFAULT_EVERY_MIN) -> ParseResult:
+def fetch_cgm(credentials: Credentials, every_min: int | None = DEFAULT_EVERY_MIN) -> ParseResult:
     """Dernière valeur et graphique du premier patient partagé. Bloquant : à appeler hors du thread GTK."""
     try:
         from pylibrelinkup import APIUrl, PyLibreLinkUp, exceptions
