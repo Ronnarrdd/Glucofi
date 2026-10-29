@@ -1,7 +1,8 @@
 import importlib.util
 import io
 import unittest
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import datetime, time, timedelta
 
 from contracts import DoseChange, DoseRule, DosingSettings, Reading
 from services.charts import compute_stats, period_of, stats_by_period
@@ -198,6 +199,58 @@ class PaletteTest(unittest.TestCase):
         """rcParams est partagé : le PDF, construit dans un thread, ne doit jamais hériter des couleurs de l'écran."""
         self.assertEqual(self.rc_after, self.rc_before)
         self.assertEqual(hex_of(self.default[0].get_facecolor()), "#FFFFFF")
+
+
+@unittest.skipUnless(HAS_MPL, "matplotlib absent (urpmi python3-matplotlib)")
+class SensorTimelineTest(unittest.TestCase):
+    """Capteur en continu : une courbe sans points, coupée aux trous ; les mesures du lecteur restent des points."""
+
+    SENSOR = replace(SETTINGS, cgm_morning=time(7, 0))
+
+    def day(self, minutes_with_values, manual=()):
+        base = datetime(2026, 9, 1)
+        sensor = [Reading(base + timedelta(minutes=m), 100 + m % 50, 0, cgm=True) for m in minutes_with_values]
+        return sensor + [Reading(base + timedelta(minutes=m), mg, 0) for m, mg in manual]
+
+    def figure(self, readings):
+        from services.charts.figures import timeline_figure
+
+        return timeline_figure(readings, [], self.SENSOR)
+
+    def curve(self, fig):
+        (line,) = [l for l in fig.axes[0].get_lines() if l.get_label() == "Capteur"]
+        return line
+
+    def test_sensor_is_one_line_with_no_points(self):
+        fig = self.figure(self.day(range(0, 600, 15)))
+        self.assertEqual(len(self.curve(fig).get_xdata()), 40)
+        dots = [c for c in fig.axes[0].collections if len(c.get_offsets()) and c.get_label() != "Glycémie du matin"]
+        self.assertEqual(dots, [], "seul le cercle de la glycémie du matin est posé sur la courbe")
+
+    def test_a_gap_over_45_minutes_cuts_the_curve_and_a_normal_step_does_not(self):
+        import math
+
+        ys = list(self.curve(self.figure(self.day([0, 15, 30, 120, 135]))).get_ydata())
+        self.assertEqual(sum(math.isnan(y) for y in ys), 1)
+        ys = list(self.curve(self.figure(self.day([0, 15, 45, 90]))).get_ydata())
+        self.assertEqual(sum(math.isnan(y) for y in ys), 0, "45 min exactement : pas encore un trou")
+
+    def test_meter_readings_stay_points_on_top_and_are_in_the_legend(self):
+        fig = self.figure(self.day(range(0, 300, 15), manual=[(60, 70), (200, 190)]))
+        points = [c for c in fig.axes[0].collections if len(c.get_offsets()) and c.get_label() != "Glycémie du matin"]
+        self.assertEqual([len(c.get_offsets()) for c in points], [2])
+        labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        self.assertIn("Capteur", labels)
+        self.assertIn("Mesures du lecteur", labels)
+
+    def test_no_meter_entry_without_meter_readings(self):
+        labels = [t.get_text() for t in self.figure(self.day(range(0, 300, 15))).axes[0].get_legend().get_texts()]
+        self.assertNotIn("Mesures du lecteur", labels)
+
+    def test_meter_only_timeline_is_unchanged(self):
+        fig = self.figure([r("2026-09-01 08:00", 90), r("2026-09-02 08:00", 120)])
+        self.assertEqual([l.get_label() for l in fig.axes[0].get_lines() if not l.get_label().startswith("_")], ["Hypoglycémie"])
+        self.assertEqual(len(fig.axes[0].collections[-1].get_offsets()) >= 2, True)
 
 
 if __name__ == "__main__":

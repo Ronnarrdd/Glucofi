@@ -97,12 +97,13 @@ def chart_hits(data: ChartData, figures: Sequence[tuple[str, object]]) -> list[l
             out.append([])
             continue
         ax, to_fraction = fig.axes[0], fig.transFigure.inverted()
-        hits = []
-        for when, value, text in points:
-            fx, fy = to_fraction.transform(ax.transData.transform((date2num(when), value)))
-            if 0 <= fx <= 1 and 0 <= fy <= 1:
-                hits.append(Hit(float(fx), 1 - float(fy), text))
-        out.append(hits)
+        # tous les points d'un coup : le capteur en donne près de 9 000 sur 90 jours
+        fractions = to_fraction.transform(ax.transData.transform([(date2num(when), value) for when, value, _ in points]))
+        out.append([
+            Hit(float(fx), 1 - float(fy), text)
+            for (fx, fy), (_when, _value, text) in zip(fractions, points)
+            if 0 <= fx <= 1 and 0 <= fy <= 1
+        ])
     return out
 
 

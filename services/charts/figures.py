@@ -21,6 +21,8 @@ from services.charts.stats import PERIODS, period_of, stats_by_period
 from services.dosing import morning_readings
 
 GAP_HOURS = 36
+# le capteur donne une valeur par quart d'heure : au-delà, c'est un trou (capteur retiré, téléphone loin)
+CGM_GAP_MIN = 45
 
 
 def _text(palette: ChartPalette, color: str | None = None) -> dict:
@@ -71,11 +73,11 @@ def _legend_below(ax, palette: ChartPalette, handles=None, labels=None, ncols: i
     ax.legend(**kwargs, loc="upper center", bbox_to_anchor=(0.5, -0.1), ncols=ncols, frameon=False, **_legend_kw(palette))
 
 
-def _break_gaps(times: list[datetime], values: list[float]) -> tuple[list, list]:
+def _break_gaps(times: list[datetime], values: list[float], gap_s: float = GAP_HOURS * 3600) -> tuple[list, list]:
     """Insère une coupure dans la courbe entre deux mesures trop espacées."""
     xs, ys = [], []
     for i, (t, v) in enumerate(zip(times, values)):
-        if i and (t - times[i - 1]).total_seconds() > GAP_HOURS * 3600:
+        if i and (t - times[i - 1]).total_seconds() > gap_s:
             xs.append(times[i - 1] + (t - times[i - 1]) / 2)
             ys.append(float("nan"))
         xs.append(t)
@@ -119,6 +121,21 @@ def _dose_changes_in(changes: Sequence[DoseChange], since: datetime | None, unti
     return [c for c in changes if (since is None or c.effective >= since) and (until is None or c.effective <= until)]
 
 
+def _sensor_curve(ax, sensor: Sequence[Reading], manual: Sequence[Reading], settings: DosingSettings, palette: ChartPalette) -> None:
+    """Capteur en continu : une courbe sans points, coupée aux trous ; les mesures du lecteur restent des points dessus."""
+    ax.plot(
+        *_break_gaps([r.device_time for r in sensor], [r.g_l for r in sensor], CGM_GAP_MIN * 60),
+        color=palette.line, lw=1.5, zorder=2, label="Capteur",
+    )
+    if manual:
+        ax.scatter(
+            [r.device_time for r in manual], [r.g_l for r in manual], zorder=3, s=36, linewidths=0.8,
+            c=[_level_color(r.g_l, settings, palette) for r in manual], edgecolors=palette.point_edge,
+        )
+        # pas de label au scatter : sa pastille prendrait la couleur de la première mesure
+        ax.plot([], [], ls="", marker="o", ms=6, mfc=palette.muted, mec=palette.point_edge, label="Mesures du lecteur")
+
+
 def timeline_figure(
     readings: Sequence[Reading],
     changes: Sequence[DoseChange],
@@ -136,9 +153,13 @@ def timeline_figure(
     _target_band(ax, settings, palette)
     times = [r.device_time for r in readings]
     values = [r.g_l for r in readings]
-    ax.plot(*_break_gaps(times, values), color=palette.line, lw=1, alpha=0.5)
-    colors = [_level_color(r.g_l, settings, palette) for r in readings]
-    ax.scatter(times, values, c=colors, s=18, zorder=3, edgecolors=palette.point_edge, linewidths=0.5)
+    sensor = [r for r in readings if r.cgm]
+    if sensor:
+        _sensor_curve(ax, sensor, [r for r in readings if not r.cgm], settings, palette)
+    else:
+        ax.plot(*_break_gaps(times, values), color=palette.line, lw=1, alpha=0.5)
+        colors = [_level_color(r.g_l, settings, palette) for r in readings]
+        ax.scatter(times, values, c=colors, s=18, zorder=3, edgecolors=palette.point_edge, linewidths=0.5)
     mornings = morning_readings(readings, settings)
     if mornings:
         ax.scatter(

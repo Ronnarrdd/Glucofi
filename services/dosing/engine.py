@@ -163,6 +163,12 @@ def reference_target(reading: Reading, settings: DosingSettings) -> DoseTarget |
     return None
 
 
+def listed_in_tables(reading: Reading, settings: DosingSettings) -> bool:
+    """Mesure à lister dans un tableau (onglet Mesures, rapport PDF) : toutes celles du lecteur ; du capteur, qui en
+    donne une par quart d'heure, seulement celles qui peuvent servir de référence (les autres sont dans la courbe)."""
+    return not reading.cgm or reference_target(reading, settings) is not None
+
+
 def can_exclude(reading: Reading, settings: DosingSettings) -> bool:
     """Une glycémie sous le seuil bas de son ajustement compte toujours : l'écarter masquerait une baisse de dose."""
     titration = settings.titration(reference_target(reading, settings) or DoseTarget.EVENING)

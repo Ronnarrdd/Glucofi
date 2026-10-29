@@ -49,6 +49,7 @@ from services.dosing import (
     exclusion_refused,
     fmt_g_l,
     fmt_mg_dl,
+    listed_in_tables,
     missed_dose_behind,
     morning_readings,
     reference_target,
@@ -366,7 +367,7 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
         for m in data.meals:
             if data.since.date() <= m.day < data.until.date():
                 meals_by_day.setdefault(m.day, []).append(m)
-        readings_desc = sorted(period, reverse=True)
+        readings_desc = sorted((r for r in period if listed_in_tables(r, settings)), reverse=True)
         days = sorted({r.device_time.date() for r in readings_desc} | set(meals_by_day), reverse=True)
         for day in days:
             if day in meals_by_day:
@@ -377,7 +378,8 @@ def build_report(data: ReportInput, path: Path | str, dpi: int = 160) -> Path:
                 i = len(rows)
                 rows.append([
                     f"{DAYS_FR[r.device_time.weekday()]} {r.device_time:%d/%m/%Y}", f"{r.device_time:%H:%M}", fmt_g_l(r.mg_dl), fmt_mg_dl(r.mg_dl),
-                    period_of(r, settings), MEAL_LABELS_FR[r.meal] if r.meal is not None else "",
+                    period_of(r, settings),
+                    MEAL_LABELS_FR[r.meal] if r.meal is not None else ("Capteur" if r.cgm else ""),
                     morning_status(r, morning_keys, settings, missed),
                     Paragraph(escape(r.note.summary), st["small"]) if r.note is not None and r.note.summary else "",
                 ])

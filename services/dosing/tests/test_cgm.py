@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
 from contracts import AlertLevel, DoseChange, DoseRule, DosingSettings, Meal, NoteTag, Reading, ReadingNote, Titration
-from services.dosing import evening_readings, morning_readings, propose
+from services.dosing import evening_readings, listed_in_tables, morning_readings, propose
 
 METER = DosingSettings(insulin="Insuline test", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3)
 CGM = replace(METER, cgm_morning=time(7, 0))
@@ -148,6 +148,20 @@ class EpisodeAlertTest(unittest.TestCase):
     def test_sensor_high_episode(self):
         highs = [Reading(datetime(2026, 9, 3, 14, 0) + timedelta(minutes=15 * i), 320, 0, cgm=True) for i in range(6)]
         self.assertIn("1 glycémie ", self.alert(highs, "hyper").message)
+
+
+class ListedInTablesTest(unittest.TestCase):
+    def test_meter_readings_are_always_listed(self):
+        for settings in (METER, CGM):
+            self.assertTrue(listed_in_tables(r("2026-09-02 15:00", 120, cgm=False), settings))
+
+    def test_sensor_readings_are_listed_only_near_the_reference_time(self):
+        self.assertTrue(listed_in_tables(r("2026-09-02 07:15", 120), CGM))
+        self.assertFalse(listed_in_tables(r("2026-09-02 07:21", 120), CGM))
+        self.assertFalse(listed_in_tables(r("2026-09-02 15:00", 120), CGM))
+
+    def test_sensor_readings_are_not_listed_when_the_meter_is_the_source(self):
+        self.assertFalse(listed_in_tables(r("2026-09-02 07:00", 120), METER))
 
 
 if __name__ == "__main__":

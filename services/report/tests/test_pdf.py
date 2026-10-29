@@ -194,6 +194,40 @@ class NotesSummaryTest(unittest.TestCase):
         self.assertEqual(morning_status(self.r(15, 120), retained, self.SETTINGS), "")
 
 
+@unittest.skipUnless(HAS_DEPS, "matplotlib ou reportlab absent")
+class SensorInTheReportTest(unittest.TestCase):
+    """Un mois de capteur ne fait pas un tableau de milliers de lignes : seules les références y figurent."""
+
+    def test_table_lists_meter_readings_and_reference_candidates_only(self):
+        from unittest import mock
+
+        from dataclasses import replace as _replace
+        from datetime import time
+
+        from services.dosing import propose
+        from services.report import pdf
+        from services.report.pdf import ReportInput, build_report
+
+        settings = _replace(DosingSettings(insulin="Insuline test", low_g_l=0.80, high_g_l=1.50, step_ui=2, high_streak_days=3), cgm_morning=time(7, 0))
+        base = datetime(2026, 9, 1)
+        readings = [Reading(base + timedelta(minutes=15 * q), 100 + q % 40, 0, cgm=True) for q in range(96)]
+        readings.append(Reading(base + timedelta(hours=15), 150, 1))
+        changes = [DoseChange(datetime(2026, 8, 31, 20), 10, 6, DoseRule.START)]
+        proposal = propose(readings, changes, settings, date(2026, 9, 1))
+        tables = []
+        real = pdf._table
+        with mock.patch.object(pdf, "_table", side_effect=lambda rows, *a, **k: (tables.append(rows), real(rows, *a, **k))[1]):
+            with tempfile.TemporaryDirectory() as tmp:
+                build_report(
+                    ReportInput(readings, changes, settings, datetime(2026, 9, 1), datetime(2026, 9, 2), "Jean Test", proposal),
+                    Path(tmp) / "rapport.pdf", dpi=40,
+                )
+        (table,) = [rows for rows in tables if rows and rows[0][0] == "Date"]
+        lines = table[1:]
+        self.assertEqual([line[1] for line in lines], ["15:00", "07:15", "07:00", "06:45"], "3 valeurs du capteur à 20 min de 07:00, plus le lecteur")
+        self.assertEqual([line[5] for line in lines].count("Capteur"), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
 
