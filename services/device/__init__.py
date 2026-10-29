@@ -17,7 +17,6 @@ from services.device.accuchek import (
 from services.device.librelinkup import (
     Credentials,
     LibreLinkUpError,
-    LibreLinkUpNotInstalled,
     NoCredentials,
     REGIONS,
     fetch_cgm,
@@ -28,7 +27,6 @@ from services.device.librelinkup import (
 __all__ = [
     "Credentials",
     "LibreLinkUpError",
-    "LibreLinkUpNotInstalled",
     "NoCredentials",
     "REGIONS",
     "fetch_cgm",

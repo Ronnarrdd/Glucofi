@@ -1,19 +1,16 @@
+import hashlib
 import locale
-import sys
 import tempfile
-import types
 import unittest
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 from pathlib import Path
-from unittest import mock
 
 from contracts import local_epoch
+from services.device.tests.fake_llu import PATIENT_ID, TOKEN, USER_ID, FakeLlu, graph_data, item
 from services.device.librelinkup import (
     Credentials,
     LibreLinkUpError,
-    LibreLinkUpNotInstalled,
-    fetch_cgm as fetch,
+    fetch_cgm,
     load_credentials,
     parse_us_timestamp,
     save_credentials,
@@ -147,55 +144,6 @@ class ParseUsTimestampTest(unittest.TestCase):
             datetime.strptime("10/29/2026 8:22:28 PM", "%m/%d/%Y %I:%M:%S %p")
 
 
-class LibraryTimestampsTest(unittest.TestCase):
-    """Avec la vraie bibliothèque (ignoré si elle n'est pas installée)."""
-
-    PAYLOAD = {
-        "FactoryTimestamp": "10/29/2026 6:52:33 PM", "Timestamp": "10/29/2026 8:52:33 PM", "type": 1,
-        "ValueInMgPerDl": 133.0, "MeasurementColor": 1, "GlucoseUnits": 0, "Value": 133.0, "isHigh": False, "isLow": False,
-    }
-
-    def setUp(self):
-        try:
-            from pylibrelinkup.models import data
-        except ImportError:
-            self.skipTest("pylibrelinkup n'est pas installée")
-        from services.device.librelinkup import _locale_proof_timestamps
-
-        _locale_proof_timestamps(data)
-        _locale_proof_timestamps(data)  # sans effet la deuxième fois
-        self.data = data
-
-    def test_measurements_parse_in_a_french_process(self):
-        french_time_locale(self)
-        measurement = self.data.GlucoseMeasurement.model_validate(self.PAYLOAD)
-        self.assertEqual(measurement.timestamp, datetime(2026, 10, 29, 20, 52, 33))
-        self.assertEqual(measurement.factory_timestamp, datetime(2026, 10, 29, 18, 52, 33, tzinfo=timezone.utc))
-
-    def test_real_datetimes_still_count_as_datetimes_for_the_library(self):
-        self.assertIsInstance(datetime(2026, 10, 29), self.data.datetime)
-        self.assertNotIsInstance("10/29/2026", self.data.datetime)
-
-    def test_other_formats_still_go_through_strptime(self):
-        self.assertEqual(self.data.datetime.strptime("2026-10-29", "%Y-%m-%d"), datetime(2026, 10, 29))
-
-
-class RegionsTest(unittest.TestCase):
-    def test_default_region_is_listed(self):
-        from services.device.librelinkup import DEFAULT_REGION, REGIONS
-
-        self.assertIn(DEFAULT_REGION, REGIONS)
-
-    def test_regions_match_the_installed_library(self):
-        try:
-            from pylibrelinkup import APIUrl
-        except ImportError:
-            self.skipTest("pylibrelinkup n'est pas installée")
-        from services.device.librelinkup import REGIONS
-
-        self.assertEqual(set(REGIONS), {member.name for member in APIUrl})
-
-
 class SaveCredentialsTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -237,137 +185,120 @@ class SaveCredentialsTest(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
 
-def fake_library(*, patients=1, graph=(), latest=None, sensors=("3MH00ABC",), error=None):
-    """Remplace pylibrelinkup : mêmes noms que ceux dont fetch() se sert."""
-    exceptions = types.SimpleNamespace(
-        PyLibreLinkUpError=type("PyLibreLinkUpError", (Exception,), {}),
-    )
-    exceptions.AuthenticationError = type("AuthenticationError", (exceptions.PyLibreLinkUpError,), {})
+class RegionsTest(unittest.TestCase):
+    def test_default_region_is_listed(self):
+        from services.device.librelinkup import DEFAULT_REGION, REGIONS
 
-    class FakeUrl(Enum):
-        FR = "https://api-fr.libreview.io"
-        US = "https://api-us.libreview.io"
-
-    def measurement(timestamp, value, high=False, low=False):
-        return types.SimpleNamespace(
-            timestamp=timestamp, value_in_mg_per_dl=value, is_high=high, is_low=low
-        )
-
-    class FakeClient:
-        instances = []
-
-        def __init__(self, email, password, api_url):
-            self.args = (email, password, api_url)
-            FakeClient.instances.append(self)
-
-        def authenticate(self):
-            if error is not None:
-                raise error(exceptions)
-
-        def get_patients(self):
-            return [object()] * patients
-
-        def read(self, _patient):
-            data = types.SimpleNamespace(
-                graph_data=list(graph),
-                active_sensors=[types.SimpleNamespace(sensor=types.SimpleNamespace(sn=sn)) for sn in sensors],
-            )
-            return types.SimpleNamespace(data=data)
-
-        def latest(self, _patient):
-            return latest
-
-    module = types.ModuleType("pylibrelinkup")
-    module.APIUrl, module.PyLibreLinkUp, module.exceptions = FakeUrl, FakeClient, exceptions
-    module.measurement, module.FakeClient = measurement, FakeClient
-    return module
-
-
-def installed(module):
-    return mock.patch.dict(sys.modules, {"pylibrelinkup": module})
+        self.assertIn(DEFAULT_REGION, REGIONS)
+        self.assertEqual(len(set(REGIONS)), len(REGIONS))
 
 
 class FetchTest(unittest.TestCase):
+    def fetch(self, fake, every_min=15, credentials=CREDENTIALS):
+        return fetch_cgm(credentials, every_min, transport=fake)
+
     def test_combines_graph_and_latest_and_names_the_sensor(self):
-        m = fake_library().measurement
-        graph = [m(datetime(2026, 10, 29, 19, 0, 10), 150), m(datetime(2026, 10, 29, 19, 15, 3), 160)]
-        lib = fake_library(graph=graph, latest=m(datetime(2026, 10, 29, 20, 0, 27), 179.0))
-        with installed(lib):
-            result = fetch(CREDENTIALS, every_min=15)
-        self.assertEqual([r.mg_dl for r in result.readings], [150, 160, 179])
+        fake = FakeLlu(graph_data(
+            [item("10/29/2026 7:00:10 PM", 150), item("10/29/2026 7:15:03 PM", 160)], item("10/29/2026 8:00:27 PM", 179)
+        ))
+        result = self.fetch(fake)
+        self.assertEqual([(r.device_time.strftime("%H:%M"), r.mg_dl) for r in result.readings], [("19:00", 150), ("19:15", 160), ("20:00", 179)])
         self.assertEqual(result.rejected, ())
         self.assertEqual((result.meter.model, result.meter.serial), ("FreeStyle Libre 3", "3MH00ABC"))
-        self.assertEqual(lib.FakeClient.instances[0].args[2].name, "FR")
+
+    def test_the_account_region_is_the_host_and_the_headers_say_who_asks(self):
+        fake = FakeLlu(graph_data([], item("10/29/2026 8:00:27 PM", 120)))
+        self.fetch(fake, credentials=Credentials("suivi@example.org", "secret", "DE"))
+        login, patients, graph = fake.calls
+        self.assertEqual((login["method"], login["host"], login["path"]), ("POST", "api-de.libreview.io", "/llu/auth/login"))
+        self.assertEqual(login["body"], {"email": "suivi@example.org", "password": "secret"})
+        self.assertNotIn("authorization", login["headers"])
+        for call in (patients, graph):
+            self.assertEqual(call["headers"]["authorization"], f"Bearer {TOKEN}")
+            self.assertEqual(call["headers"]["account-id"], hashlib.sha256(USER_ID.encode()).hexdigest())
+            self.assertEqual((call["headers"]["product"], call["headers"]["version"]), ("llu.android", "4.16.0"))
+        self.assertEqual(graph["path"], f"/llu/connections/{PATIENT_ID}/graph")
 
     def test_graph_empty_still_returns_the_latest_value(self):
-        lib = fake_library(latest=fake_library().measurement(datetime(2026, 10, 29, 20, 0, 27), 179.0))
-        with installed(lib):
-            result = fetch(CREDENTIALS)
+        result = self.fetch(FakeLlu(graph_data([], item("10/29/2026 8:00:27 PM", 179))))
         self.assertEqual([r.mg_dl for r in result.readings], [179])
 
-    def test_latest_repeated_in_graph_is_one_reading(self):
-        m = fake_library().measurement
-        point = m(datetime(2026, 10, 29, 20, 0, 5), 179.0)
-        lib = fake_library(graph=[point], latest=m(datetime(2026, 10, 29, 20, 0, 40), 179.0))
-        with installed(lib):
-            self.assertEqual(len(fetch(CREDENTIALS, every_min=None).readings), 1)
+    def test_no_current_value_is_fine(self):
+        result = self.fetch(FakeLlu(graph_data([item("10/29/2026 7:00:10 PM", 150)], None)))
+        self.assertEqual([r.mg_dl for r in result.readings], [150])
 
-    def test_invalid_measure_is_rejected_and_listed(self):
-        m = fake_library().measurement
-        lib = fake_library(graph=[m(datetime(2026, 10, 29, 19, 0), 3.0)], latest=m(datetime(2026, 10, 29, 20, 0), 120))
-        with installed(lib):
-            result = fetch(CREDENTIALS)
+    def test_latest_repeated_in_graph_is_one_reading(self):
+        fake = FakeLlu(graph_data([item("10/29/2026 8:00:05 PM", 179)], item("10/29/2026 8:00:40 PM", 179)))
+        self.assertEqual(len(self.fetch(fake, every_min=None).readings), 1)
+
+    def test_invalid_measures_are_rejected_and_listed_not_fatal(self):
+        fake = FakeLlu(graph_data(
+            [item("10/29/2026 7:00:00 PM", 3.0), {"Timestamp": "n'importe quoi", "ValueInMgPerDl": 100}, {"Timestamp": "10/29/2026 7:05:00 PM"}],
+            item("10/29/2026 8:00:00 PM", 120),
+        ))
+        result = self.fetch(fake)
         self.assertEqual([r.mg_dl for r in result.readings], [120])
-        self.assertEqual(len(result.rejected), 1)
+        self.assertEqual(len(result.rejected), 3)
         self.assertIn("hors plage", result.rejected[0])
 
+    def test_off_scale_values_use_the_meter_codes(self):
+        result = self.fetch(FakeLlu(graph_data([item("10/29/2026 7:00:00 PM", 400, high=True), item("10/29/2026 7:15:00 PM", 40, low=True)], None)))
+        self.assertEqual([(r.mg_dl, r.off_scale) for r in result.readings], [(601, "high"), (9, "low")])
+
+    def test_french_process_reads_pm(self):
+        french_time_locale(self)
+        result = self.fetch(FakeLlu(graph_data([], item("10/29/2026 8:22:28 PM", 179))))
+        self.assertEqual(result.readings[0].device_time, datetime(2026, 10, 29, 20, 22))
+
     def test_no_sensor_means_no_meter(self):
-        m = fake_library().measurement
-        lib = fake_library(sensors=(), latest=m(datetime(2026, 10, 29, 20, 0), 120))
-        with installed(lib):
-            self.assertIsNone(fetch(CREDENTIALS).meter)
+        self.assertIsNone(self.fetch(FakeLlu(graph_data([], item("10/29/2026 8:00:00 PM", 120), sensor=None))).meter)
+
+    def test_gzip_answers_are_read(self):
+        fake = FakeLlu(graph_data([], item("10/29/2026 8:00:00 PM", 120)))
+        fake.gzip = True
+        self.assertEqual(len(self.fetch(fake).readings), 1)
 
     def test_no_shared_patient(self):
-        with installed(fake_library(patients=0)), self.assertRaisesRegex(LibreLinkUpError, "Aucun patient partagé"):
-            fetch(CREDENTIALS)
+        with self.assertRaisesRegex(LibreLinkUpError, "Aucun patient partagé"):
+            self.fetch(FakeLlu(patients=[]))
 
     def test_wrong_password(self):
-        lib = fake_library(error=lambda ex: ex.AuthenticationError("bad"))
-        with installed(lib), self.assertRaisesRegex(LibreLinkUpError, "Identifiants LibreLinkUp refusés"):
-            fetch(CREDENTIALS)
+        fake = FakeLlu()
+        fake.login_replies = [(200, {"status": 2, "error": {"message": "notAuthenticated"}})]
+        with self.assertRaisesRegex(LibreLinkUpError, "Identifiants LibreLinkUp refusés : vérifiez l'e-mail et le mot de passe\\.$"):
+            self.fetch(fake)
 
-    def test_other_api_error_and_network_error(self):
-        for error, expected in (
-            (lambda ex: ex.PyLibreLinkUpError("boom"), "a refusé la demande : boom"),
-            (lambda ex: ConnectionError("réseau coupé"), "injoignable : réseau coupé"),
-        ):
-            with self.subTest(expected=expected), installed(fake_library(error=error)):
-                with self.assertRaisesRegex(LibreLinkUpError, expected):
-                    fetch(CREDENTIALS)
+    def test_http_failures(self):
+        for status, expected in ((401, "Identifiants LibreLinkUp refusés"), (429, "Trop de demandes"), (500, "LibreLinkUp a répondu 500")):
+            fake = FakeLlu()
+            fake.fail["/llu/connections"] = (status, {}, b"{}")
+            with self.subTest(status), self.assertRaisesRegex(LibreLinkUpError, expected):
+                self.fetch(fake)
 
-    def test_unexpected_response_shape_is_a_clear_message_not_a_crash(self):
-        try:
-            from pydantic import ValidationError
-        except ImportError:
-            self.skipTest("pydantic n'est pas installé")
+    def test_network_error(self):
+        fake = FakeLlu()
+        fake.network_error = ConnectionError("réseau coupé")
+        with self.assertRaisesRegex(LibreLinkUpError, "injoignable : réseau coupé"):
+            self.fetch(fake)
 
-        def invalid(_ex):
-            return ValidationError.from_exception_data(
-                "GraphResponse", [{"type": "missing", "loc": ("data", "graphData", 0, "Timestamp"), "input": {}}]
-            )
-
-        with installed(fake_library(error=invalid)), self.assertRaisesRegex(
-            LibreLinkUpError, r"inattendue \(1 champs invalides, dont data\.graphData\.0\.Timestamp\).*pip install --user -U pylibrelinkup"
-        ):
-            fetch(CREDENTIALS)
+    def test_unreadable_or_unexpected_answers_are_clear_messages(self):
+        fake = FakeLlu()
+        fake.fail["/llu/connections"] = (200, {}, b"<html>pas du json")
+        with self.assertRaisesRegex(LibreLinkUpError, "Réponse illisible"):
+            self.fetch(fake)
+        fake = FakeLlu(patients=[{"pas_de_patientId": 1}])
+        with self.assertRaisesRegex(LibreLinkUpError, "inattendue.*l'API a peut-être changé"):
+            self.fetch(fake)
 
     def test_unknown_region(self):
-        with installed(fake_library()), self.assertRaisesRegex(LibreLinkUpError, "Région LibreLinkUp inconnue"):
-            fetch(Credentials("a", "b", "MARS"))
+        with self.assertRaisesRegex(LibreLinkUpError, "Région LibreLinkUp inconnue : 'MARS'"):
+            self.fetch(FakeLlu(), credentials=Credentials("a", "b", "MARS"))
 
-    def test_library_not_installed(self):
-        with mock.patch.dict(sys.modules, {"pylibrelinkup": None}), self.assertRaises(LibreLinkUpNotInstalled):
-            fetch(CREDENTIALS)
+    def test_the_session_is_not_reused_between_calls(self):
+        fake = FakeLlu(graph_data([], item("10/29/2026 8:00:00 PM", 120)))
+        self.fetch(fake)
+        self.fetch(fake)
+        self.assertEqual([c["path"] for c in fake.calls].count("/llu/auth/login"), 2)
 
 
 if __name__ == "__main__":
