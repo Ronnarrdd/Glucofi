@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -116,6 +117,45 @@ def save_credentials(credentials: Credentials | None, path: Path) -> None:
     path.chmod(0o600)
 
 
+_US_TIMESTAMP = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4}) (\d{1,2}):(\d{2}):(\d{2}) (AM|PM)")
+US_TIMESTAMP_FORMAT = "%m/%d/%Y %I:%M:%S %p"
+
+
+def parse_us_timestamp(text: str) -> datetime:
+    """« 10/29/2026 8:22:28 PM » sans dépendre de la langue : %p de strptime vaut '' en fr_FR (locale que GTK donne
+    au processus), « PM » n'y est alors pas reconnu."""
+    match = _US_TIMESTAMP.fullmatch(text.strip())
+    if match is None:
+        raise ValueError(f"heure LibreLinkUp illisible : {text!r}")
+    month, day, year, hour, minute, second = (int(part) for part in match.groups()[:6])
+    if not 1 <= hour <= 12:
+        raise ValueError(f"heure LibreLinkUp illisible : {text!r}")
+    return datetime(year, month, day, hour % 12 + (12 if match[7] == "PM" else 0), minute, second)
+
+
+def _locale_proof_timestamps(data_module) -> None:
+    """Fait lire les heures à pylibrelinkup par parse_us_timestamp (seul strptime de la bibliothèque, models/data.py).
+
+    shortcut: remplace le `datetime` de ce module ; à revoir si la bibliothèque change sa façon de lire les heures.
+    """
+    base = data_module.datetime
+    if getattr(base, "locale_proof", False):
+        return
+
+    class _Instances(type):
+        def __instancecheck__(cls, obj):  # la bibliothèque teste isinstance(v, datetime) sur de vrais datetime
+            return isinstance(obj, base)
+
+    class LocaleProofDatetime(base, metaclass=_Instances):
+        locale_proof = True
+
+        @classmethod
+        def strptime(cls, text, fmt):
+            return parse_us_timestamp(text) if fmt == US_TIMESTAMP_FORMAT else super().strptime(text, fmt)
+
+    data_module.datetime = LocaleProofDatetime
+
+
 def to_reading(timestamp: datetime, mg_dl: float, is_high: bool = False, is_low: bool = False) -> Reading:
     """Une mesure du capteur. Heure locale du téléphone, à la minute (comme le lecteur) : un réimport ne duplique pas."""
     if is_high:
@@ -148,11 +188,18 @@ def thin(readings: Sequence[Reading], every_min: int | None = DEFAULT_EVERY_MIN)
 def fetch_cgm(credentials: Credentials, every_min: int | None = DEFAULT_EVERY_MIN) -> ParseResult:
     """Dernière valeur et graphique du premier patient partagé. Bloquant : à appeler hors du thread GTK."""
     try:
+        from pydantic import ValidationError
         from pylibrelinkup import APIUrl, PyLibreLinkUp, exceptions
     except ImportError as exc:
         raise LibreLinkUpNotInstalled(
             "La bibliothèque pylibrelinkup manque : pip install --user pylibrelinkup."
         ) from exc
+    try:
+        from pylibrelinkup.models import data as library_data
+    except ImportError:
+        log.warning("pylibrelinkup.models.data introuvable : lecture des heures laissée à la bibliothèque")
+    else:
+        _locale_proof_timestamps(library_data)
     try:
         api_url = APIUrl[credentials.region.upper()]
     except KeyError:
@@ -175,6 +222,12 @@ def fetch_cgm(credentials: Credentials, every_min: int | None = DEFAULT_EVERY_MI
         raise LibreLinkUpError("Identifiants LibreLinkUp refusés : vérifiez l'e-mail et le mot de passe.") from exc
     except exceptions.PyLibreLinkUpError as exc:
         raise LibreLinkUpError(f"LibreLinkUp a refusé la demande : {exc}.") from exc
+    except ValidationError as exc:
+        where = ".".join(str(part) for part in exc.errors()[0]["loc"])
+        raise LibreLinkUpError(
+            f"Réponse de LibreLinkUp inattendue ({exc.error_count()} champs invalides, dont {where}) : "
+            "mettez pylibrelinkup à jour (pip install --user -U pylibrelinkup)."
+        ) from exc
     except OSError as exc:  # requests.RequestException hérite d'OSError
         raise LibreLinkUpError(f"LibreLinkUp injoignable : {exc}.") from exc
 

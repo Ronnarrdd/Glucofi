@@ -1,3 +1,4 @@
+import locale
 import sys
 import tempfile
 import types
@@ -14,6 +15,7 @@ from services.device.librelinkup import (
     LibreLinkUpNotInstalled,
     fetch_cgm as fetch,
     load_credentials,
+    parse_us_timestamp,
     save_credentials,
     thin,
     to_reading,
@@ -102,6 +104,80 @@ class CredentialsTest(unittest.TestCase):
         file = self.env_file("LIBRELINKUP_EMAIL=a@b.c\n")
         self.assertIsNone(load_credentials({}, (file, Path("/nonexistent/.env"))))
         self.assertIsNone(load_credentials({}, ()))
+
+
+def french_time_locale(test: unittest.TestCase) -> None:
+    """LC_TIME en fr_FR pour la durée du test (GTK met le processus dans la langue de l'utilisateur)."""
+    saved = locale.setlocale(locale.LC_TIME)
+    test.addCleanup(locale.setlocale, locale.LC_TIME, saved)
+    for name in ("fr_FR.UTF-8", "fr_FR.utf8", "fr_FR"):
+        try:
+            locale.setlocale(locale.LC_TIME, name)
+            return
+        except locale.Error:
+            continue
+    test.skipTest("locale fr_FR absente")
+
+
+class ParseUsTimestampTest(unittest.TestCase):
+    def test_hours_around_noon_and_midnight(self):
+        for text, expected in (
+            ("10/29/2026 8:22:28 PM", datetime(2026, 10, 29, 20, 22, 28)),
+            ("10/29/2026 12:00:00 AM", datetime(2026, 10, 29, 0, 0, 0)),
+            ("10/29/2026 12:30:00 PM", datetime(2026, 10, 29, 12, 30, 0)),
+            ("1/2/2026 1:05:09 AM", datetime(2026, 1, 2, 1, 5, 9)),
+            ("12/31/2026 11:59:59 PM", datetime(2026, 12, 31, 23, 59, 59)),
+        ):
+            with self.subTest(text):
+                self.assertEqual(parse_us_timestamp(text), expected)
+
+    def test_garbage_and_impossible_values_are_refused(self):
+        for text in ("", "pas une date", "10/29/2026 20:22:28", "10/29/2026 0:10:00 AM", "10/29/2026 13:10:00 PM", "13/45/2026 1:00:00 AM"):
+            with self.subTest(text), self.assertRaises(ValueError):
+                parse_us_timestamp(text)
+
+    def test_french_locale_does_not_matter(self):
+        french_time_locale(self)
+        self.assertEqual(parse_us_timestamp("10/29/2026 8:22:28 PM"), datetime(2026, 10, 29, 20, 22, 28))
+
+    def test_the_bug_is_real_in_strptime(self):
+        """Pourquoi parse_us_timestamp existe : strptime ne lit pas « PM » en fr_FR."""
+        french_time_locale(self)
+        with self.assertRaises(ValueError):
+            datetime.strptime("10/29/2026 8:22:28 PM", "%m/%d/%Y %I:%M:%S %p")
+
+
+class LibraryTimestampsTest(unittest.TestCase):
+    """Avec la vraie bibliothèque (ignoré si elle n'est pas installée)."""
+
+    PAYLOAD = {
+        "FactoryTimestamp": "10/29/2026 6:52:33 PM", "Timestamp": "10/29/2026 8:52:33 PM", "type": 1,
+        "ValueInMgPerDl": 133.0, "MeasurementColor": 1, "GlucoseUnits": 0, "Value": 133.0, "isHigh": False, "isLow": False,
+    }
+
+    def setUp(self):
+        try:
+            from pylibrelinkup.models import data
+        except ImportError:
+            self.skipTest("pylibrelinkup n'est pas installée")
+        from services.device.librelinkup import _locale_proof_timestamps
+
+        _locale_proof_timestamps(data)
+        _locale_proof_timestamps(data)  # sans effet la deuxième fois
+        self.data = data
+
+    def test_measurements_parse_in_a_french_process(self):
+        french_time_locale(self)
+        measurement = self.data.GlucoseMeasurement.model_validate(self.PAYLOAD)
+        self.assertEqual(measurement.timestamp, datetime(2026, 10, 29, 20, 52, 33))
+        self.assertEqual(measurement.factory_timestamp, datetime(2026, 10, 29, 18, 52, 33, tzinfo=timezone.utc))
+
+    def test_real_datetimes_still_count_as_datetimes_for_the_library(self):
+        self.assertIsInstance(datetime(2026, 10, 29), self.data.datetime)
+        self.assertNotIsInstance("10/29/2026", self.data.datetime)
+
+    def test_other_formats_still_go_through_strptime(self):
+        self.assertEqual(self.data.datetime.strptime("2026-10-29", "%Y-%m-%d"), datetime(2026, 10, 29))
 
 
 class RegionsTest(unittest.TestCase):
@@ -268,6 +344,22 @@ class FetchTest(unittest.TestCase):
             with self.subTest(expected=expected), installed(fake_library(error=error)):
                 with self.assertRaisesRegex(LibreLinkUpError, expected):
                     fetch(CREDENTIALS)
+
+    def test_unexpected_response_shape_is_a_clear_message_not_a_crash(self):
+        try:
+            from pydantic import ValidationError
+        except ImportError:
+            self.skipTest("pydantic n'est pas installé")
+
+        def invalid(_ex):
+            return ValidationError.from_exception_data(
+                "GraphResponse", [{"type": "missing", "loc": ("data", "graphData", 0, "Timestamp"), "input": {}}]
+            )
+
+        with installed(fake_library(error=invalid)), self.assertRaisesRegex(
+            LibreLinkUpError, r"inattendue \(1 champs invalides, dont data\.graphData\.0\.Timestamp\).*pip install --user -U pylibrelinkup"
+        ):
+            fetch(CREDENTIALS)
 
     def test_unknown_region(self):
         with installed(fake_library()), self.assertRaisesRegex(LibreLinkUpError, "Région LibreLinkUp inconnue"):
